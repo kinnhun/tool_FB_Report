@@ -1,6 +1,5 @@
 # browser.py
 import time
-import random
 import zipfile
 import os
 import shutil
@@ -17,7 +16,7 @@ class BrowserManager:
     def __init__(self):
         self.driver = None
 
-    # --- Phần Proxy & Tìm Chrome (Giữ nguyên như cũ) ---
+    # ------------------ Setup & Proxy ------------------
     def create_proxy_auth_extension(self, proxy_host, proxy_port, proxy_user, proxy_pass, scheme='http'):
         manifest_json = """
         {
@@ -55,7 +54,8 @@ class BrowserManager:
         candidates = ["chrome", "google-chrome", "chromium", "chromium-browser", "chrome.exe"]
         for name in candidates:
             path = shutil.which(name)
-            if path: return path
+            if path:
+                return path
         if platform.system() == "Windows":
             possible = [
                 r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -63,7 +63,8 @@ class BrowserManager:
                 r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
             ]
             for p in possible:
-                if os.path.exists(p): return p
+                if os.path.exists(p):
+                    return p
         return None
 
     def start_browser(self, proxy_string=None):
@@ -71,17 +72,17 @@ class BrowserManager:
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-infobars")
         options.add_argument("--start-maximized")
-        
+
         binary_path = self.find_chrome_executable()
         if binary_path:
             options.binary_location = binary_path
-        
+
         if proxy_string and proxy_string.strip():
             p_str = proxy_string.strip()
             if '@' in p_str:
-                auth, host_port = p_str.split('@')
-                user, password = auth.split(':')
-                host, port = host_port.split(':')
+                auth, host_port = p_str.split('@', 1)
+                user, password = auth.split(':', 1)
+                host, port = host_port.split(':', 1)
                 plugin_file = self.create_proxy_auth_extension(host, port, user, password)
                 options.add_extension(plugin_file)
             else:
@@ -94,142 +95,228 @@ class BrowserManager:
             return False, f"Lỗi khởi tạo Browser: {str(e)}"
 
     def inject_cookies(self, raw_cookie_str):
-        if not self.driver: return False, "Chưa khởi động trình duyệt"
+        if not self.driver:
+            return False, "Chưa khởi động trình duyệt"
         try:
             self.driver.get("https://www.facebook.com/")
             cookies = []
-            raw_cookie_str = raw_cookie_str.replace('Cookie:', '').strip()
-            pairs = raw_cookie_str.split(';')
+            raw = raw_cookie_str.replace('Cookie:', '').strip()
+            pairs = [p.strip() for p in raw.split(';') if p.strip()]
             for pair in pairs:
                 if '=' in pair:
-                    name, value = pair.strip().split('=', 1)
+                    name, value = pair.split('=', 1)
                     cookies.append({'name': name.strip(), 'value': value.strip(), 'domain': '.facebook.com', 'path': '/'})
             for c in cookies:
-                try: self.driver.add_cookie(c)
-                except: pass
+                try:
+                    self.driver.add_cookie(c)
+                except Exception:
+                    # Một số cookie có thuộc tính không chấp nhận bởi Selenium -> bỏ qua
+                    pass
             self.driver.refresh()
-            time.sleep(3)
-            if "login" not in self.driver.current_url: return True, "Đã Inject Cookie & Login OK"
-            else: return False, "Inject xong nhưng chưa Login được"
-        except Exception as e: return False, f"Lỗi Inject Cookie: {str(e)}"
+            time.sleep(2)
+            if "login" not in self.driver.current_url:
+                return True, "Đã Inject Cookie & Login OK"
+            else:
+                return False, "Inject xong nhưng chưa Login được (cookie có thể hết hạn hoặc checkpoint)"
+        except Exception as e:
+            return False, f"Lỗi Inject Cookie: {str(e)}"
 
-    # --- PHẦN QUAN TRỌNG: AUTOMATION REPORT ---
-
-    def auto_report_process(self, category_text):
-        """
-        Hàm thực hiện chuỗi hành động báo cáo tự động
-        category_text: Nội dung lấy từ ComboBox UI (ví dụ: "Spam", "Bạo lực"...)
-        """
+    # ------------------ Helpers ------------------
+    def smart_click(self, xpath, timeout=5):
+        """Chờ element clickable rồi click bằng JS để ổn định hơn."""
         try:
-            wait = WebDriverWait(self.driver, 5)
+            wait = WebDriverWait(self.driver, timeout)
+            elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            self.driver.execute_script("arguments[0].click();", elem)
+            return True
+        except Exception:
+            return False
 
-            # BƯỚC 1: Click 3 chấm
-            print("Đang tìm nút 3 chấm...")
-            xpath_3dots = "//div[@aria-label='Hành động với bài viết này' or @aria-label='Actions for this post' or @aria-label='More' or @aria-label='Xem thêm tùy chọn']"
+    def click_button_by_text(self, texts, timeout=3):
+        """Thử click phần tử chứa một trong các texts."""
+        for t in texts:
+            xpath = f"//span[contains(normalize-space(.), '{t}')] | //div[@aria-label='{t}'] | //button[.//span[contains(normalize-space(.), '{t}')]]"
+            if self.smart_click(xpath, timeout=timeout):
+                return True
+        return False
+
+    def click_next_action(self):
+        keywords = ["Tiếp", "Next", "Gửi", "Submit", "Xong", "Done"]
+        return self.click_button_by_text(keywords, timeout=2)
+
+    # ------------------ Robust 3-dots finder ------------------
+    def find_and_click_three_dots(self):
+        """
+        Robust method to find & click the three-dot menu:
+        - Try aria-label / text variants
+        - Try SVG detection: look for <svg> that contains 3 <circle> elements and click it (or its clickable ancestor)
+        - Fallback tries: any clickable element with title/aria-label containing 'More' / 'Tùy' / 'Hành động'
+        """
+        if not self.driver:
+            return False, "Browser chưa chạy"
+
+        wait = WebDriverWait(self.driver, 4)
+
+        # 1) Try common aria-label/text variants (fast)
+        variants = [
+            "Hành động với bài viết này",
+            "Actions for this post",
+            "More",
+            "Xem thêm tùy chọn",
+            "More options",
+            "Options",
+            "Tùy chọn",
+            "Thêm"
+        ]
+        for v in variants:
             try:
-                btn_3dots = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_3dots)))
-                btn_3dots.click()
-            except:
-                return False, "Không thấy nút 3 chấm (có thể do mạng hoặc layout khác)"
-            
-            time.sleep(2) # Chờ menu xổ ra
+                # match aria-label exactly or span text contains
+                xpath = f"//div[@aria-label='{v}'] | //button[@aria-label='{v}'] | //span[contains(normalize-space(.), '{v}')]"
+                if self.smart_click(xpath, timeout=1):
+                    return True, f"Đã click nút 3 chấm (variant='{v}')"
+            except Exception:
+                pass
 
-            # BƯỚC 2: Click dòng "Báo cáo" / "Tìm hỗ trợ"
-            print("Đang tìm nút Báo cáo trong menu...")
-            xpath_report = "//span[contains(text(), 'Báo cáo') or contains(text(), 'Report') or contains(text(), 'Find support') or contains(text(), 'Tìm hỗ trợ')]"
-            try:
-                btn_report = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_report)))
-                btn_report.click()
-            except:
-                return False, "Không thấy nút Báo cáo trong menu"
+        # 2) Try to detect svg with three circles: //svg[count(.//circle)=3] or //svg[count(circle)=3]
+        try:
+            # Wait presence of such svg (short timeout)
+            svg_xpath_candidates = [
+                "//svg[count(.//circle)=3]",
+                "//svg[count(circle)=3]",
+                "//svg[.//circle and string-length(normalize-space(.))>0]"  # fallback
+            ]
+            for sx in svg_xpath_candidates:
+                try:
+                    svg = wait.until(EC.presence_of_element_located((By.XPATH, sx)))
+                    # Click the svg or nearest clickable ancestor
+                    try:
+                        # Try click the svg itself
+                        self.driver.execute_script("arguments[0].click();", svg)
+                        return True, "Đã click nút 3 chấm (bằng SVG 3 circle)"
+                    except Exception:
+                        # Fallback: click ancestor with role='button' or clickable div
+                        try:
+                            ancestor = svg.find_element(By.XPATH, "./ancestor::div[@role='button' or @role='menuitem'][1]")
+                            self.driver.execute_script("arguments[0].click();", ancestor)
+                            return True, "Đã click nút 3 chấm (ancestor)"
+                        except Exception:
+                            # try a more generic ancestor
+                            try:
+                                ancestor2 = svg.find_element(By.XPATH, "./ancestor::div[1]")
+                                self.driver.execute_script("arguments[0].click();", ancestor2)
+                                return True, "Đã click nút 3 chấm (ancestor2)"
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-            time.sleep(3) # Chờ popup hiện ra
+        # 3) Fallback: search for any element with role='button' that contains an svg with circles (scan few)
+        try:
+            candidate_buttons = self.driver.find_elements(By.XPATH, "//div[@role='button' or button or @role='menuitem']")
+            for el in candidate_buttons:
+                try:
+                    svgs = el.find_elements(By.TAG_NAME, "svg")
+                    for svg in svgs:
+                        circles = svg.find_elements(By.TAG_NAME, "circle")
+                        if len(circles) >= 3:
+                            try:
+                                self.driver.execute_script("arguments[0].click();", el)
+                                return True, "Đã click nút 3 chấm (scan buttons/svg circles)"
+                            except Exception:
+                                pass
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
-            # BƯỚC 3: Chọn Lý do từ Popup
-            # Mapping từ UI Category sang text keyword trên Facebook
-            # FB text có thể là: "Spam", "Bạo lực", "Hàng giả", "Bán hàng cấm"...
-            # Ta sẽ dùng thuật toán tìm text gần đúng (contains)
-            
-            print(f"Đang tìm lý do: {category_text}")
-            
-            # Xử lý mapping từ text UI sang keyword tìm kiếm trên FB
-            search_keyword = category_text
-            if "người lớn" in category_text.lower(): search_keyword = "khỏa thân" # FB thường dùng từ "Khỏa thân" hoặc "Ảnh khỏa thân"
-            elif "lừa đảo" in category_text.lower(): search_keyword = "Lừa đảo"
-            elif "bạo lực" in category_text.lower(): search_keyword = "Bạo lực"
-            elif "bắt nạt" in category_text.lower(): search_keyword = "Bắt nạt"
-            elif "thông tin sai" in category_text.lower(): search_keyword = "Thông tin sai"
-            elif "bán hàng" in category_text.lower(): search_keyword = "Bán hàng"
+        return False, "Không tìm thấy nút 3 chấm"
 
-            # Tìm thẻ chứa text lý do (thường là span hoặc div trong role='button' hoặc listitem)
-            xpath_reason = f"//span[contains(text(), '{search_keyword}')]"
-            
-            try:
-                btn_reason = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_reason)))
-                btn_reason.click()
-            except:
-                return False, f"Không tìm thấy lý do '{search_keyword}' trong popup FB. Hãy chọn tay."
+    # ------------------ Report flow (simplified usage) ------------------
+    def execute_report_flow(self, category, detail):
+        """
+        Example flow:
+         - find/click 3-dots
+         - click 'Báo cáo' / 'Report'
+         - choose category (category)
+         - click Next
+         - choose detail (detail)
+         - click Next / Submit
+        """
+        if not self.driver:
+            return False, "Browser chưa chạy"
 
-            time.sleep(1)
+        try:
+            ok, msg = self.find_and_click_three_dots()
+            if not ok:
+                return False, msg
 
-            # BƯỚC 4: Bấm nút "Gửi" (Submit) hoặc "Tiếp" (Next)
-            print("Đang tìm nút Gửi...")
-            # Nút submit thường có aria-label="Gửi" hoặc text là Gửi
-            xpath_submit = "//div[@aria-label='Gửi' or @aria-label='Submit' or text()='Gửi' or text()='Submit' or @aria-label='Tiếp' or text()='Tiếp']"
-            
-            try:
-                # Đôi khi phải scroll xuống nút submit nếu popup dài
-                btn_submit = wait.until(EC.presence_of_element_located((By.XPATH, xpath_submit)))
-                self.driver.execute_script("arguments[0].click();", btn_submit) # Click bằng JS cho chắc
-                return True, f"Đã chọn '{category_text}' và bấm Gửi thành công!"
-            except:
-                return True, "Đã chọn lý do, nhưng không bấm được nút Gửi (hãy bấm tay bước cuối)."
+            time.sleep(0.5)
+
+            # click report button
+            if not self.click_button_by_text(["Báo cáo", "Report", "Tìm hỗ trợ", "Find support"]):
+                return False, "Không click được nút Báo cáo sau khi mở menu"
+
+            # wait a bit for popup
+            time.sleep(0.8)
+
+            # If popup asks "Bạn muốn báo cáo điều gì?" (Page-specific), try choose "Thông tin về trang này" or "Bài viết cụ thể"
+            # We'll try to click "Thông tin về trang này" if present first (safe), user can choose correct category/detail in UI
+            self.click_button_by_text(["Thông tin về trang này", "Information about this Page", "Bài viết cụ thể", "A specific post"])
+
+            # Choose category (level 1)
+            if category:
+                if not self.click_button_by_text([category]):
+                    # try a normalized match (lowercase contains)
+                    if not self.click_button_by_text([category.split()[0]]):
+                        return False, f"Không tìm thấy hạng mục '{category}'"
+            time.sleep(0.5)
+            # Next
+            self.click_next_action()
+            time.sleep(0.5)
+
+            # Choose detail (level 2)
+            if detail:
+                if not self.click_button_by_text([detail], timeout=4):
+                    # fallback: try partial words
+                    parts = detail.split()
+                    if len(parts) >= 2:
+                        short = " ".join(parts[:2])
+                        self.click_button_by_text([short], timeout=2)
+            time.sleep(0.4)
+            # Next / Submit
+            self.click_next_action()
+            time.sleep(0.6)
+            # Final try
+            self.click_next_action()
+
+            return True, "Quy trình báo cáo đã được thực hiện (kiểm tra UI để xác nhận)."
 
         except Exception as e:
-            return False, f"Lỗi Auto Report: {str(e)}"
+            return False, f"Lỗi trong execute_report_flow: {str(e)}"
 
-    def navigate_to(self, url, category_ui_text, is_random=False):
-        """
-        Nhận thêm tham số category_ui_text để biết người dùng muốn report thể loại gì
-        """
-        if not self.driver: return False, "Browser chưa chạy"
-        
+    def navigate_and_report(self, url, category, detail):
+        if not self.driver:
+            return False, "Browser chưa chạy"
         try:
             self.driver.get(url)
-            time.sleep(3)
-            
-            target_url = url
-            
-            if is_random:
-                self.driver.execute_script("window.scrollTo(0, 1000);")
-                time.sleep(2)
-                links = self.driver.find_elements(By.TAG_NAME, "a")
-                valid_links = []
-                for link in links:
-                    href = link.get_attribute('href')
-                    if href and any(x in href for x in ['/posts/', '/videos/', '/photos/', 'fbid=']):
-                        valid_links.append(href)
-                
-                if valid_links:
-                    target_url = random.choice(valid_links)
-                    self.driver.get(target_url)
-                    time.sleep(3)
-
-            # BẮT ĐẦU QUY TRÌNH REPORT TỰ ĐỘNG
-            status, msg = self.auto_report_process(category_ui_text)
-            
-            if is_random:
-                return status, f"Random bài {target_url} -> {msg}"
-            else:
-                return status, f"Link {target_url} -> {msg}"
-            
+            # short wait for page render; heavier waits occur in smart_click
+            time.sleep(1.2)
+            ok, msg = self.execute_report_flow(category, detail)
+            return ok, msg
         except Exception as e:
-            return False, f"Lỗi điều hướng: {str(e)}"
+            return False, f"Lỗi navigate_and_report: {str(e)}"
 
     def close(self):
         if self.driver:
-            self.driver.quit()
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
             self.driver = None
             if os.path.exists('proxy_auth_plugin.zip'):
-                try: os.remove('proxy_auth_plugin.zip')
-                except: pass
+                try:
+                    os.remove('proxy_auth_plugin.zip')
+                except Exception:
+                    pass

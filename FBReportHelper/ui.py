@@ -11,188 +11,131 @@ class ReportApp:
         self.root = root
         self.root.title(config.WINDOW_TITLE)
         self.root.geometry(config.WINDOW_SIZE)
-        
         self.browser_manager = BrowserManager()
-        
         self.setup_ui()
 
     def setup_ui(self):
-        # Chia layout: 2 cột
-        left_frame = ttk.LabelFrame(self.root, text="Cấu hình & Input", padding=10)
-        left_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        # Layout chính
+        main_frame = ttk.Frame(self.root, padding=10)
+        main_frame.pack(fill='both', expand=True)
         
-        right_frame = ttk.LabelFrame(self.root, text="Thao tác & Log", padding=10)
-        right_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        
-        self.root.grid_columnconfigure(0, weight=1)
-        self.root.grid_columnconfigure(1, weight=1)
-        self.root.grid_rowconfigure(0, weight=1)
+        # === KHUNG CẤU HÌNH (TRÁI) ===
+        left_frame = ttk.LabelFrame(main_frame, text="1. Kết nối & Tài khoản", padding=10)
+        left_frame.pack(side='left', fill='both', expand=True, padx=5)
 
-        # --- CỘT TRÁI ---
-        
         # Nút Start/Stop
         btn_frame = ttk.Frame(left_frame)
         btn_frame.pack(fill='x', pady=5)
-        self.btn_start = ttk.Button(btn_frame, text="START BROWSER", command=self.start_thread)
-        self.btn_start.pack(side='left', expand=True, fill='x', padx=2)
-        
-        self.btn_stop = ttk.Button(btn_frame, text="STOP", command=self.stop_browser, state='disabled')
-        self.btn_stop.pack(side='right', expand=True, fill='x', padx=2)
+        self.btn_start = ttk.Button(btn_frame, text="KHỞI ĐỘNG BROWSER", command=self.start_thread)
+        self.btn_start.pack(side='left', expand=True, fill='x')
+        self.btn_stop = ttk.Button(btn_frame, text="DỪNG", command=self.stop_browser, state='disabled')
+        self.btn_stop.pack(side='right', expand=True, fill='x')
 
-        # Proxy
-        ttk.Label(left_frame, text="Proxy (host:port hoặc user:pass@host:port):").pack(anchor='w', pady=(10,0))
+        ttk.Label(left_frame, text="Proxy (IP:Port hoặc User:Pass@IP:Port):").pack(anchor='w', pady=(10,0))
         self.entry_proxy = ttk.Entry(left_frame)
-        self.entry_proxy.pack(fill='x', pady=2)
+        self.entry_proxy.pack(fill='x')
 
-        # Cookie
-        ttk.Label(left_frame, text="Cookie (Raw text):").pack(anchor='w', pady=(10,0))
-        self.txt_cookie = tk.Text(left_frame, height=8)
-        self.txt_cookie.pack(fill='x', pady=2)
+        ttk.Label(left_frame, text="Cookie Facebook (Raw):").pack(anchor='w', pady=(10,0))
+        self.txt_cookie = tk.Text(left_frame, height=10)
+        self.txt_cookie.pack(fill='x')
+        
+        # === KHUNG THAO TÁC (PHẢI) ===
+        right_frame = ttk.LabelFrame(main_frame, text="2. Thiết lập Báo cáo", padding=10)
+        right_frame.pack(side='right', fill='both', expand=True, padx=5)
 
-        # Link Report Input
-        ttk.Label(left_frame, text="Link Report (Trang/Bài viết):").pack(anchor='w', pady=(10,0))
-        self.entry_link_report = ttk.Entry(left_frame)
-        self.entry_link_report.pack(fill='x', pady=2)
+        ttk.Label(right_frame, text="Link cần báo cáo (Trang hoặc Bài viết):").pack(anchor='w')
+        self.entry_url = ttk.Entry(right_frame)
+        self.entry_url.pack(fill='x', pady=5)
 
-        # --- CỘT PHẢI ---
-
-        # Hạng mục
-        ttk.Label(right_frame, text="Hạng mục báo cáo:").pack(anchor='w')
+        # Combobox Hạng mục (Cấp 1)
+        ttk.Label(right_frame, text="Chọn Hạng mục chính:").pack(anchor='w', pady=(10,0))
         self.combo_category = ttk.Combobox(right_frame, values=config.CATEGORIES, state="readonly")
         self.combo_category.pack(fill='x', pady=5)
-        self.combo_category.current(0)
-        # Bind sự kiện thay đổi để cập nhật "Chi tiết hành vi"
-        self.combo_category.bind("<<ComboboxSelected>>", self.on_category_changed)
+        self.combo_category.bind("<<ComboboxSelected>>", self.on_category_change)
 
-        # Hành vi (sẽ được cập nhật theo hạng mục)
-        ttk.Label(right_frame, text="Chi tiết hành vi:").pack(anchor='w')
-        # Khởi tạo với danh sách mặc định; on_category_changed sẽ cập nhật ngay sau
-        self.combo_behavior = ttk.Combobox(right_frame, values=config.BEHAVIORS, state="readonly")
-        self.combo_behavior.pack(fill='x', pady=5)
+        # Combobox Chi tiết (Cấp 2)
+        ttk.Label(right_frame, text="Chọn Chi tiết hành vi:").pack(anchor='w', pady=(10,0))
+        self.combo_detail = ttk.Combobox(right_frame, state="readonly")
+        self.combo_detail.pack(fill='x', pady=5)
 
-        # Sau khi tạo, cập nhật chi tiết theo hạng mục hiện tại
-        self.on_category_changed()
+        # Nút Hành động
+        ttk.Label(right_frame, text="Hành động:").pack(anchor='w', pady=(20,0))
+        self.btn_run = ttk.Button(right_frame, text=">>> CHẠY AUTO REPORT <<<", command=self.run_report_thread, state='disabled')
+        self.btn_run.pack(fill='x', ipady=10)
 
-        # Link liên quan
-        ttk.Label(right_frame, text="Link người liên quan (nếu có):").pack(anchor='w')
-        self.entry_related = ttk.Entry(right_frame)
-        self.entry_related.pack(fill='x', pady=5)
+        # Status Bar
+        self.lbl_status = ttk.Label(self.root, text="Trạng thái: Chờ khởi động...", relief="sunken", anchor="w")
+        self.lbl_status.pack(side='bottom', fill='x')
+        
+        # Init default values
+        if config.CATEGORIES:
+            self.combo_category.current(0)
+            self.on_category_change()
 
-        # Checkbox Random
-        self.var_random = tk.BooleanVar()
-        self.chk_random = ttk.Checkbutton(right_frame, text="Báo cáo bài viết random (trên Page)", variable=self.var_random)
-        self.chk_random.pack(anchor='w', pady=10)
-
-        # Nút Mở bài viết
-        self.btn_open = ttk.Button(right_frame, text="MỞ BÀI VIẾT ĐỂ XEM", command=self.open_link_thread, state='disabled')
-        self.btn_open.pack(fill='x', pady=10, ipady=5)
-
-        # Nút Lưu Log
-        self.btn_log = ttk.Button(right_frame, text="LƯU LOG (ĐÃ XỬ LÝ)", command=self.save_log)
-        self.btn_log.pack(fill='x', pady=5)
-
-        # Status bar
-        self.lbl_status = ttk.Label(self.root, text="Trạng thái: Sẵn sàng", relief="sunken", anchor="w")
-        self.lbl_status.grid(row=1, column=0, columnspan=2, sticky="ew")
-
-    # --- Logic Handling ---
+    # --- EVENT HANDLERS ---
+    def on_category_change(self, event=None):
+        """Khi chọn Hạng mục -> Cập nhật danh sách Chi tiết tương ứng"""
+        cat = self.combo_category.get()
+        details = config.REPORT_DATA.get(cat, [])
+        self.combo_detail.config(values=details)
+        if details:
+            self.combo_detail.current(0)
+        else:
+            self.combo_detail.set("")
 
     def update_status(self, msg):
         self.lbl_status.config(text=f"Trạng thái: {msg}")
 
     def start_thread(self):
         t = threading.Thread(target=self.start_browser_process)
-        t.daemon = True
-        t.start()
+        t.daemon = True; t.start()
 
     def start_browser_process(self):
         self.btn_start.config(state='disabled')
-        self.update_status("Đang khởi động trình duyệt...")
+        self.update_status("Đang mở trình duyệt...")
         
-        proxy = self.entry_proxy.get()
-        cookie = self.txt_cookie.get("1.0", "end-1c")
+        proxy = self.entry_proxy.get().strip()
+        cookie = self.txt_cookie.get("1.0", "end-1c").strip()
         
-        success, msg = self.browser_manager.start_browser(proxy)
-        if success:
-            self.update_status("Browser đã mở. Đang inject cookie...")
-            
-            # Inject cookie
-            if cookie.strip():
-                ok, c_msg = self.browser_manager.inject_cookies(cookie)
-                self.update_status(c_msg)
-            else:
-                self.update_status("Đã mở browser (không cookie)")
-
+        ok, msg = self.browser_manager.start_browser(proxy)
+        if ok:
+            if cookie:
+                self.update_status("Injecting Cookie...")
+                self.browser_manager.inject_cookies(cookie)
+            self.update_status("Trình duyệt sẵn sàng.")
             self.btn_stop.config(state='normal')
-            self.btn_open.config(state='normal')
+            self.btn_run.config(state='normal')
         else:
-            self.update_status(msg)
+            self.update_status(f"Lỗi: {msg}")
             self.btn_start.config(state='normal')
 
-    def open_link_thread(self):
-        t = threading.Thread(target=self.process_open_link)
-        t.daemon = True
-        t.start()
+    def run_report_thread(self):
+        t = threading.Thread(target=self.process_report)
+        t.daemon = True; t.start()
 
-     # Trong ui.py
+    def process_report(self):
+        url = self.entry_url.get().strip()
+        cat = self.combo_category.get()
+        detail = self.combo_detail.get()
 
-    def process_open_link(self):
-        url = self.entry_link_report.get().strip()
-        is_random = self.var_random.get()
-        category_text = self.combo_category.get()  # <--- Lấy text hạng mục (ví dụ: Nội dung người lớn)
-        
         if not url:
-            messagebox.showwarning("Thiếu thông tin", "Vui lòng nhập Link Report")
+            messagebox.showwarning("Thiếu Link", "Vui lòng nhập URL cần báo cáo.")
             return
 
-        self.update_status(f"Đang điều hướng và auto-report: {category_text}...")
-        
-        # Truyền category_text vào hàm navigate_to
-        success, msg = self.browser_manager.navigate_to(url, category_text, is_random)
+        self.update_status(f"Đang chạy auto: {cat}...")
+        ok, msg = self.browser_manager.navigate_and_report(url, cat, detail)
         self.update_status(msg)
         
-    def save_log(self):
-        url = self.entry_link_report.get().strip()
-        cat = self.combo_category.get()
-        beh = self.combo_behavior.get()
-        rel = self.entry_related.get()
-        
-        if not url:
-            messagebox.showerror("Lỗi", "Không có link report để ghi log")
-            return
-
-        note = "Đã mở xem"
-        if self.var_random.get():
-            note += " (Random post)"
-        
-        success, msg = log_report(url, cat, beh, rel, note)
-        if success:
-            messagebox.showinfo("Thành công", "Đã lưu log vào file CSV")
+        # Ghi log
+        log_report(url, cat, detail, msg)
+        if ok:
+            messagebox.showinfo("Thành công", msg)
         else:
-            messagebox.showerror("Lỗi", msg)
+            messagebox.showerror("Thất bại", msg)
 
     def stop_browser(self):
         self.browser_manager.close()
-        self.update_status("Đã dừng trình duyệt")
+        self.update_status("Đã đóng trình duyệt.")
         self.btn_start.config(state='normal')
         self.btn_stop.config(state='disabled')
-        self.btn_open.config(state='disabled')
-
-    # --- MỚI: cập nhật danh sách "Chi tiết hành vi" theo hạng mục ---
-    def on_category_changed(self, event=None):
-        """
-        Khi người dùng chọn 1 Hạng mục, cập nhật ComboBox Chi tiết hành vi
-        theo mapping trong config.CATEGORY_REASONS. Nếu không có mapping,
-        dùng danh sách BEHAVIORS mặc định.
-        """
-        cat = self.combo_category.get()
-        behaviors = config.CATEGORY_REASONS.get(cat, config.BEHAVIORS)
-        # Cập nhật values và chọn phần tử đầu nếu có
-        self.combo_behavior.config(values=behaviors)
-        if behaviors:
-            try:
-                self.combo_behavior.current(0)
-            except:
-                self.combo_behavior.set(behaviors[0])
-        else:
-            self.combo_behavior.set("")
+        self.btn_run.config(state='disabled')
