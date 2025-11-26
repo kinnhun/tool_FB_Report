@@ -61,12 +61,17 @@ class ReportApp:
         self.combo_category = ttk.Combobox(right_frame, values=config.CATEGORIES, state="readonly")
         self.combo_category.pack(fill='x', pady=5)
         self.combo_category.current(0)
+        # Bind sự kiện thay đổi để cập nhật "Chi tiết hành vi"
+        self.combo_category.bind("<<ComboboxSelected>>", self.on_category_changed)
 
-        # Hành vi
+        # Hành vi (sẽ được cập nhật theo hạng mục)
         ttk.Label(right_frame, text="Chi tiết hành vi:").pack(anchor='w')
+        # Khởi tạo với danh sách mặc định; on_category_changed sẽ cập nhật ngay sau
         self.combo_behavior = ttk.Combobox(right_frame, values=config.BEHAVIORS, state="readonly")
         self.combo_behavior.pack(fill='x', pady=5)
-        self.combo_behavior.current(0)
+
+        # Sau khi tạo, cập nhật chi tiết theo hạng mục hiện tại
+        self.on_category_changed()
 
         # Link liên quan
         ttk.Label(right_frame, text="Link người liên quan (nếu có):").pack(anchor='w')
@@ -172,3 +177,22 @@ class ReportApp:
         self.btn_start.config(state='normal')
         self.btn_stop.config(state='disabled')
         self.btn_open.config(state='disabled')
+
+    # --- MỚI: cập nhật danh sách "Chi tiết hành vi" theo hạng mục ---
+    def on_category_changed(self, event=None):
+        """
+        Khi người dùng chọn 1 Hạng mục, cập nhật ComboBox Chi tiết hành vi
+        theo mapping trong config.CATEGORY_REASONS. Nếu không có mapping,
+        dùng danh sách BEHAVIORS mặc định.
+        """
+        cat = self.combo_category.get()
+        behaviors = config.CATEGORY_REASONS.get(cat, config.BEHAVIORS)
+        # Cập nhật values và chọn phần tử đầu nếu có
+        self.combo_behavior.config(values=behaviors)
+        if behaviors:
+            try:
+                self.combo_behavior.current(0)
+            except:
+                self.combo_behavior.set(behaviors[0])
+        else:
+            self.combo_behavior.set("")
