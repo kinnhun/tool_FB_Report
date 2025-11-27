@@ -7,6 +7,8 @@ import time
 import csv
 import os
 import random
+import shutil
+import base64
 from browser import BrowserManager
 from logger import log_report, migrate_log_if_needed
 import config
@@ -25,11 +27,39 @@ class ReportApp:
         self.stop_event = threading.Event()
         self.active_browsers = {} # {tree_item_id: browser_instance}
         self.account_data = {} # {tree_item_id: full_cookie}
-        self.final_screenshots = {} # {tree_item_id: base64_str}
+        # self.final_screenshots = {} # REMOVED: Save to disk instead
         self.report_sets = [] # List of (category, detail) tuples
         self.lock = threading.Lock()
         
+        # UI Queue for performance
+        self.ui_queue = queue.Queue()
+        
+        # Temp folder for screenshots
+        self.temp_dir = "temp_screenshots"
+        if not os.path.exists(self.temp_dir):
+            os.makedirs(self.temp_dir)
+        
         self.setup_ui()
+        
+        # Start UI consumer
+        self.process_ui_queue()
+
+    def process_ui_queue(self):
+        try:
+            # Process up to 50 events at a time to keep UI responsive
+            for _ in range(50):
+                task = self.ui_queue.get_nowait()
+                func, args = task
+                try:
+                    func(*args)
+                except Exception:
+                    pass
+                self.ui_queue.task_done()
+        except queue.Empty:
+            pass
+        self.root.after(50, self.process_ui_queue)
+
+    def setup_ui(self):
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding=10)
@@ -286,9 +316,8 @@ class ReportApp:
         if status in ["Chờ", "Lỗi Start"]:
              lbl_img.config(text="Trình duyệt chưa chạy hoặc lỗi khởi động.")
         elif status in ["Hoàn thành", "Lỗi"]:
-            # Show final
-            with self.lock:
-                b64 = self.final_screenshots.get(item_id)
+            # Show final from disk
+            b64 = self.get_screenshot_from_disk(item_id)
             if b64:
                 self.show_image(lbl_img, b64)
             else:
@@ -310,9 +339,8 @@ class ReportApp:
             else:
                 pass 
         else:
-            # Browser might have just finished
-            with self.lock:
-                b64 = self.final_screenshots.get(item_id)
+            # Browser might have just finished, check disk
+            b64 = self.get_screenshot_from_disk(item_id)
             if b64:
                 self.show_image(lbl_img, b64)
             return
@@ -672,8 +700,7 @@ class ReportApp:
             
             # Final screenshot
             b64 = bm.get_screenshot_base64()
-            with self.lock:
-                self.final_screenshots[item] = b64
+            self.save_screenshot_to_disk(item, b64)
             
         except Exception as e:
             self.update_item(item, "status", "Lỗi")
@@ -682,8 +709,7 @@ class ReportApp:
             
             # Error screenshot
             b64 = bm.get_screenshot_base64()
-            with self.lock:
-                self.final_screenshots[item] = b64
+            self.save_screenshot_to_disk(item, b64)
         finally:
             bm.close()
             with self.lock:
@@ -691,7 +717,27 @@ class ReportApp:
                     del self.active_browsers[item]
 
     def update_item(self, item, col, val):
-        self.root.after(0, lambda: self.tree.set(item, col, val))
+        # Push to queue instead of direct update
+        self.ui_queue.put((self.tree.set, (item, col, val)))
+
+    def save_screenshot_to_disk(self, item_id, b64_data):
+        if not b64_data: return
+        try:
+            path = os.path.join(self.temp_dir, f"{item_id}.png")
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(b64_data))
+        except Exception:
+            pass
+
+    def get_screenshot_from_disk(self, item_id):
+        path = os.path.join(self.temp_dir, f"{item_id}.png")
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    return base64.b64encode(f.read()).decode('utf-8')
+            except:
+                return None
+        return None
 
     def stop_batch(self):
         self.stop_event.set()

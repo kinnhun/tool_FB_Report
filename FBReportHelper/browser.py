@@ -4,6 +4,7 @@ import zipfile
 import os
 import shutil
 import platform
+import tempfile
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -47,7 +48,12 @@ class BrowserManager:
         }}
         chrome.webRequest.onAuthRequired.addListener(callbackFn, {{urls: ["<all_urls>"]}}, ['blocking']);
         """
-        self.plugin_file = f'proxy_auth_plugin_{uuid.uuid4()}.zip'
+        
+        # Use tempfile to avoid file conflicts and IO lag in current dir
+        t = tempfile.NamedTemporaryFile(suffix='.zip', delete=False)
+        self.plugin_file = t.name
+        t.close()
+        
         with zipfile.ZipFile(self.plugin_file, 'w') as zp:
             zp.writestr("manifest.json", manifest_json)
             zp.writestr("background.js", background_js)
@@ -75,10 +81,21 @@ class BrowserManager:
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-infobars")
         options.add_argument("--start-maximized")
+        
+        # Performance Optimizations
+        options.page_load_strategy = 'eager' # Interactive: Do not wait for full load
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-logging")
+        options.add_argument("--log-level=3")
+        
+        # Disable images if not strictly needed (optional, but helps performance)
+        # options.add_argument("--blink-settings=imagesEnabled=false") 
 
         if headless:
             options.add_argument("--headless=new")
-            options.add_argument("--window-size=1920,1080")
+            options.add_argument("--window-size=1280,720") # Smaller size for headless
 
         binary_path = self.find_chrome_executable()
         if binary_path:
