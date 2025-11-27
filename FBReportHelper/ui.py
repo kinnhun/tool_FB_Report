@@ -8,7 +8,7 @@ import csv
 import os
 import random
 from browser import BrowserManager
-from logger import log_report
+from logger import log_report, migrate_log_if_needed
 import config
 
 class ReportApp:
@@ -16,6 +16,9 @@ class ReportApp:
         self.root = root
         self.root.title(config.WINDOW_TITLE)
         self.root.geometry("1200x750")
+        
+        # Migrate log file if needed
+        migrate_log_if_needed()
         
         # State
         self.is_running = False
@@ -356,6 +359,7 @@ class ReportApp:
             return
 
         header = data[0]
+        self.history_header = header
         rows = data[1:]
         # Reverse to show newest first
         rows.reverse()
@@ -523,7 +527,10 @@ class ReportApp:
                 wb = openpyxl.Workbook()
                 ws = wb.active
                 # Header
-                ws.append(["Thời gian", "URL", "Hạng mục", "Chi tiết", "Kết quả"])
+                if hasattr(self, 'history_header'):
+                    ws.append(self.history_header)
+                else:
+                    ws.append(["Thời gian", "URL", "Hạng mục", "Chi tiết", "Kết quả", "Account"])
                 # Rows
                 for row in self.history_rows:
                     ws.append(row)
@@ -628,6 +635,14 @@ class ReportApp:
     def process_one_account(self, item, cookie, url, cat, detail, proxy, headless):
         self.update_item(item, "status", "Đang chạy...")
         
+        # Extract c_user for logging
+        c_user = ""
+        try:
+            if "c_user=" in cookie:
+                c_user = cookie.split("c_user=")[1].split(";")[0]
+        except:
+            pass
+
         bm = BrowserManager()
         with self.lock:
             self.active_browsers[item] = bm
@@ -637,17 +652,23 @@ class ReportApp:
             if not ok:
                 self.update_item(item, "status", "Lỗi Start")
                 self.update_item(item, "result", msg)
+                log_report(url, cat, detail, f"Start Failed: {msg}", c_user)
                 return
 
             self.update_item(item, "status", "Inject Cookie...")
             bm.inject_cookies(cookie)
             
             self.update_item(item, "status", "Đang báo cáo...")
-            bm.navigate_and_report(url, cat, detail)
+            ok_report, msg_report = bm.navigate_and_report(url, cat, detail)
             
-            self.update_item(item, "status", "Hoàn thành")
-            self.update_item(item, "result", "Đã gửi báo cáo")
-            log_report(url, cat, detail, f"Success (Item {item})")
+            if ok_report:
+                self.update_item(item, "status", "Hoàn thành")
+                self.update_item(item, "result", msg_report)
+                log_report(url, cat, detail, "Success", c_user)
+            else:
+                self.update_item(item, "status", "Lỗi")
+                self.update_item(item, "result", msg_report)
+                log_report(url, cat, detail, f"Failed: {msg_report}", c_user)
             
             # Final screenshot
             b64 = bm.get_screenshot_base64()
@@ -657,6 +678,7 @@ class ReportApp:
         except Exception as e:
             self.update_item(item, "status", "Lỗi")
             self.update_item(item, "result", str(e))
+            log_report(url, cat, detail, f"Exception: {str(e)}", c_user)
             
             # Error screenshot
             b64 = bm.get_screenshot_base64()
