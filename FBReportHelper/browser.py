@@ -12,9 +12,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
+import uuid
+
 class BrowserManager:
     def __init__(self):
         self.driver = None
+        self.plugin_file = None
 
     # ------------------ Setup & Proxy ------------------
     def create_proxy_auth_extension(self, proxy_host, proxy_port, proxy_user, proxy_pass, scheme='http'):
@@ -44,11 +47,11 @@ class BrowserManager:
         }}
         chrome.webRequest.onAuthRequired.addListener(callbackFn, {{urls: ["<all_urls>"]}}, ['blocking']);
         """
-        pluginfile = 'proxy_auth_plugin.zip'
-        with zipfile.ZipFile(pluginfile, 'w') as zp:
+        self.plugin_file = f'proxy_auth_plugin_{uuid.uuid4()}.zip'
+        with zipfile.ZipFile(self.plugin_file, 'w') as zp:
             zp.writestr("manifest.json", manifest_json)
             zp.writestr("background.js", background_js)
-        return pluginfile
+        return self.plugin_file
 
     def find_chrome_executable(self):
         candidates = ["chrome", "google-chrome", "chromium", "chromium-browser", "chrome.exe"]
@@ -67,11 +70,15 @@ class BrowserManager:
                     return p
         return None
 
-    def start_browser(self, proxy_string=None):
+    def start_browser(self, proxy_string=None, headless=False):
         options = Options()
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-infobars")
         options.add_argument("--start-maximized")
+
+        if headless:
+            options.add_argument("--headless=new")
+            options.add_argument("--window-size=1920,1080")
 
         binary_path = self.find_chrome_executable()
         if binary_path:
@@ -308,6 +315,14 @@ class BrowserManager:
         except Exception as e:
             return False, f"Lỗi navigate_and_report: {str(e)}"
 
+    def get_screenshot_base64(self):
+        if self.driver:
+            try:
+                return self.driver.get_screenshot_as_base64()
+            except:
+                return None
+        return None
+
     def close(self):
         if self.driver:
             try:
@@ -315,8 +330,10 @@ class BrowserManager:
             except Exception:
                 pass
             self.driver = None
-            if os.path.exists('proxy_auth_plugin.zip'):
-                try:
-                    os.remove('proxy_auth_plugin.zip')
-                except Exception:
-                    pass
+        
+        if self.plugin_file and os.path.exists(self.plugin_file):
+            try:
+                os.remove(self.plugin_file)
+            except Exception:
+                pass
+            self.plugin_file = None
