@@ -6,6 +6,7 @@ import queue
 import time
 import csv
 import os
+import random
 from browser import BrowserManager
 from logger import log_report
 import config
@@ -22,6 +23,7 @@ class ReportApp:
         self.active_browsers = {} # {tree_item_id: browser_instance}
         self.account_data = {} # {tree_item_id: full_cookie}
         self.final_screenshots = {} # {tree_item_id: base64_str}
+        self.report_sets = [] # List of (category, detail) tuples
         self.lock = threading.Lock()
         
         self.setup_ui()
@@ -38,13 +40,31 @@ class ReportApp:
         control_frame = ttk.Frame(left_frame)
         control_frame.pack(fill='x', pady=5)
         
-        ttk.Label(control_frame, text="Cookie mới:").pack(side='left')
-        self.entry_new_cookie = ttk.Entry(control_frame)
-        self.entry_new_cookie.pack(side='left', fill='x', expand=True, padx=5)
+        # Cookie Input (c_user & xs)
+        cookie_frame = ttk.Frame(control_frame)
+        cookie_frame.pack(fill='x', pady=2)
         
-        ttk.Button(control_frame, text="Thêm", command=self.add_cookie).pack(side='left')
-        ttk.Button(control_frame, text="Nhập nhiều (File)", command=self.import_cookies).pack(side='left', padx=5)
-        ttk.Button(control_frame, text="Xóa chọn", command=self.delete_selected).pack(side='left')
+        ttk.Label(cookie_frame, text="c_user:").pack(side='left')
+        self.entry_c_user = ttk.Entry(cookie_frame, width=15)
+        self.entry_c_user.pack(side='left', padx=5)
+        
+        ttk.Label(cookie_frame, text="xs:").pack(side='left')
+        self.entry_xs = ttk.Entry(cookie_frame, width=15)
+        self.entry_xs.pack(side='left', padx=5)
+        
+        ttk.Button(cookie_frame, text="Thêm Cookie", command=self.add_cookie).pack(side='left', padx=5)
+
+        # File Actions
+        file_frame = ttk.Frame(control_frame)
+        file_frame.pack(fill='x', pady=5)
+        
+        ttk.Button(file_frame, text="Nhập Excel (CSV)", command=self.import_cookies).pack(side='left')
+        ttk.Button(file_frame, text="Nhập (.xlsx)", command=self.import_cookies_xlsx).pack(side='left', padx=5)
+        
+        ttk.Button(file_frame, text="Xuất Excel (CSV)", command=self.export_cookies).pack(side='left')
+        ttk.Button(file_frame, text="Xuất (.xlsx)", command=self.export_cookies_xlsx).pack(side='left', padx=5)
+        
+        ttk.Button(file_frame, text="Xóa chọn", command=self.delete_selected).pack(side='left')
 
         # Treeview
         columns = ("stt", "cookie", "status", "result", "view")
@@ -107,6 +127,16 @@ class ReportApp:
         self.combo_detail = ttk.Combobox(right_frame, state="readonly")
         self.combo_detail.pack(fill='x', pady=5)
         
+        # Report Sets UI
+        btn_set_frame = ttk.Frame(right_frame)
+        btn_set_frame.pack(fill='x', pady=5)
+        ttk.Button(btn_set_frame, text="Thêm vào bộ (Random)", command=self.add_report_set).pack(side='left', expand=True, fill='x')
+        ttk.Button(btn_set_frame, text="Xóa bộ", command=self.clear_report_set).pack(side='left', padx=5)
+
+        ttk.Label(right_frame, text="Danh sách bộ báo cáo:").pack(anchor='w')
+        self.list_report_sets = tk.Listbox(right_frame, height=6)
+        self.list_report_sets.pack(fill='x', pady=5)
+        
         ttk.Separator(right_frame, orient='horizontal').pack(fill='x', pady=20)
         
         self.btn_run = ttk.Button(right_frame, text="CHẠY HÀNG LOẠT", command=self.start_batch)
@@ -128,27 +158,83 @@ class ReportApp:
 
     # --- EVENT HANDLERS ---
     def add_cookie(self):
-        c = self.entry_new_cookie.get().strip()
-        if c:
+        c_user = self.entry_c_user.get().strip()
+        xs = self.entry_xs.get().strip()
+        
+        if c_user and xs:
+            # Format: c_user=...;xs=...
+            full_cookie = f"c_user={c_user};xs={xs}"
+            
             # Mask cookie for display
-            display_c = c[:10] + "..." + c[-5:] if len(c) > 15 else c
+            display_c = f"{c_user} | {xs[:5]}..."
             item_id = self.tree.insert("", "end", values=(len(self.tree.get_children())+1, display_c, "Chờ", "", "Xem"))
-            self.account_data[item_id] = c
-            self.entry_new_cookie.delete(0, 'end')
+            self.account_data[item_id] = full_cookie
+            
+            self.entry_c_user.delete(0, 'end')
+            self.entry_xs.delete(0, 'end')
+        else:
+            messagebox.showwarning("Thiếu thông tin", "Vui lòng nhập cả c_user và xs")
 
     def import_cookies(self):
-        fp = filedialog.askopenfilename(filetypes=[("Text Files", "*.txt")])
+        fp = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")])
         if fp:
             try:
-                with open(fp, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        c = line.strip()
-                        if c:
-                            display_c = c[:10] + "..." + c[-5:] if len(c) > 15 else c
-                            item_id = self.tree.insert("", "end", values=(len(self.tree.get_children())+1, display_c, "Chờ", "", "Xem"))
-                            self.account_data[item_id] = c
+                with open(fp, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.reader(f)
+                    # Try to detect header
+                    header = next(reader, None)
+                    if not header: return
+                    
+                    # Check columns
+                    try:
+                        # Normalize headers
+                        headers = [h.strip().lower() for h in header]
+                        idx_c = headers.index('c_user')
+                        idx_xs = headers.index('xs')
+                    except ValueError:
+                        messagebox.showerror("Lỗi Format", "File CSV cần có cột 'c_user' và 'xs'")
+                        return
+                        
+                    count = 0
+                    for row in reader:
+                        if len(row) > max(idx_c, idx_xs):
+                            c_user = row[idx_c].strip()
+                            xs = row[idx_xs].strip()
+                            if c_user and xs:
+                                full_cookie = f"c_user={c_user};xs={xs}"
+                                display_c = f"{c_user} | {xs[:5]}..."
+                                item_id = self.tree.insert("", "end", values=(len(self.tree.get_children())+1, display_c, "Chờ", "", "Xem"))
+                                self.account_data[item_id] = full_cookie
+                                count += 1
+                    messagebox.showinfo("Thành công", f"Đã nhập {count} tài khoản.")
             except Exception as e:
                 messagebox.showerror("Lỗi", f"Không đọc được file: {e}")
+
+    def export_cookies(self):
+        fp = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv")])
+        if fp:
+            try:
+                with open(fp, 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["c_user", "xs"])
+                    
+                    for item_id, full_cookie in self.account_data.items():
+                        # Parse back c_user and xs
+                        try:
+                            parts = full_cookie.split(';')
+                            c_val = ""
+                            xs_val = ""
+                            for p in parts:
+                                if 'c_user=' in p:
+                                    c_val = p.split('=')[1]
+                                if 'xs=' in p:
+                                    xs_val = p.split('=')[1]
+                            writer.writerow([c_val, xs_val])
+                        except:
+                            pass
+                messagebox.showinfo("Thành công", "Đã xuất file CSV.")
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không ghi được file: {e}")
 
     def delete_selected(self):
         for item in self.tree.selection():
@@ -313,6 +399,8 @@ class ReportApp:
         self.lbl_page_info.pack(side='left', padx=20)
         ttk.Button(ctrl_frame, text="Sau >>", command=lambda: self.change_hist_page(1)).pack(side='left')
         
+        ttk.Button(ctrl_frame, text="Xuất Excel (.xlsx)", command=self.export_history_xlsx).pack(side='right', padx=10)
+        
         self.load_hist_page()
 
     def change_hist_page(self, delta):
@@ -343,6 +431,119 @@ class ReportApp:
         else:
             max_page = (total_rows - 1) // self.history_page_size + 1
         self.lbl_page_info.config(text=f"Trang {self.history_page + 1} / {max_page} (Tổng: {total_rows} dòng)")
+
+    def import_cookies_xlsx(self):
+        try:
+            import openpyxl
+        except ImportError:
+            messagebox.showerror("Thiếu thư viện", "Vui lòng cài đặt openpyxl: pip install openpyxl")
+            return
+
+        fp = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
+        if fp:
+            try:
+                wb = openpyxl.load_workbook(fp)
+                sheet = wb.active
+                
+                # Find headers
+                headers = {}
+                for cell in sheet[1]:
+                    if cell.value:
+                        headers[str(cell.value).strip().lower()] = cell.column - 1
+                
+                if 'c_user' not in headers or 'xs' not in headers:
+                    messagebox.showerror("Lỗi Format", "File Excel cần có cột 'c_user' và 'xs' ở dòng đầu tiên.")
+                    return
+                
+                idx_c = headers['c_user']
+                idx_xs = headers['xs']
+                
+                count = 0
+                for row in sheet.iter_rows(min_row=2, values_only=True):
+                    if row[idx_c] and row[idx_xs]:
+                        c_user = str(row[idx_c]).strip()
+                        xs = str(row[idx_xs]).strip()
+                        
+                        full_cookie = f"c_user={c_user};xs={xs}"
+                        display_c = f"{c_user} | {xs[:5]}..."
+                        item_id = self.tree.insert("", "end", values=(len(self.tree.get_children())+1, display_c, "Chờ", "", "Xem"))
+                        self.account_data[item_id] = full_cookie
+                        count += 1
+                messagebox.showinfo("Thành công", f"Đã nhập {count} tài khoản từ Excel.")
+                
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không đọc được file: {e}")
+
+    def export_cookies_xlsx(self):
+        try:
+            import openpyxl
+        except ImportError:
+            messagebox.showerror("Thiếu thư viện", "Vui lòng cài đặt openpyxl: pip install openpyxl")
+            return
+            
+        fp = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel Files", "*.xlsx")])
+        if fp:
+            try:
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.append(["c_user", "xs"])
+                
+                for item_id, full_cookie in self.account_data.items():
+                    try:
+                        parts = full_cookie.split(';')
+                        c_val = ""
+                        xs_val = ""
+                        for p in parts:
+                            if 'c_user=' in p:
+                                c_val = p.split('=')[1]
+                            if 'xs=' in p:
+                                xs_val = p.split('=')[1]
+                        ws.append([c_val, xs_val])
+                    except:
+                        pass
+                
+                wb.save(fp)
+                messagebox.showinfo("Thành công", "Đã xuất file Excel (.xlsx).")
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không ghi được file: {e}")
+
+    def export_history_xlsx(self):
+        if not self.history_rows:
+            return
+            
+        try:
+            import openpyxl
+        except ImportError:
+            messagebox.showerror("Thiếu thư viện", "Vui lòng cài đặt openpyxl: pip install openpyxl")
+            return
+
+        fp = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel Files", "*.xlsx")])
+        if fp:
+            try:
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                # Header
+                ws.append(["Thời gian", "URL", "Hạng mục", "Chi tiết", "Kết quả"])
+                # Rows
+                for row in self.history_rows:
+                    ws.append(row)
+                wb.save(fp)
+                messagebox.showinfo("Thành công", "Đã xuất lịch sử ra Excel.")
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không ghi được file: {e}")
+
+    def add_report_set(self):
+        cat = self.combo_category.get()
+        detail = self.combo_detail.get()
+        if cat and detail:
+            self.report_sets.append((cat, detail))
+            self.list_report_sets.insert('end', f"{cat} -> {detail}")
+        else:
+            messagebox.showwarning("Thiếu thông tin", "Vui lòng chọn Hạng mục và Chi tiết trước khi thêm.")
+
+    def clear_report_set(self):
+        self.report_sets = []
+        self.list_report_sets.delete(0, 'end')
 
     # --- BATCH LOGIC ---
     def start_batch(self):
@@ -379,11 +580,23 @@ class ReportApp:
         except:
             num_threads = 1
             
-        threading.Thread(target=self.run_queue, args=(q, num_threads, url)).start()
+        # Prepare report sets
+        current_sets = list(self.report_sets)
+        # If empty, use the currently selected one
+        if not current_sets:
+            cat = self.combo_category.get()
+            detail = self.combo_detail.get()
+            if cat and detail:
+                current_sets.append((cat, detail))
+            else:
+                messagebox.showwarning("Thiếu cấu hình", "Vui lòng chọn Hạng mục báo cáo hoặc thêm vào bộ báo cáo.")
+                self.btn_run.config(state='normal')
+                self.btn_stop.config(state='disabled')
+                return
 
-    def run_queue(self, q, num_threads, url):
-        cat = self.combo_category.get()
-        detail = self.combo_detail.get()
+        threading.Thread(target=self.run_queue, args=(q, num_threads, url, current_sets)).start()
+
+    def run_queue(self, q, num_threads, url, report_sets):
         proxy = self.entry_proxy.get().strip()
         headless = self.var_headless.get()
         
@@ -394,7 +607,11 @@ class ReportApp:
                 except queue.Empty:
                     break
                 
-                self.process_one_account(item, cookie, url, cat, detail, proxy, headless)
+                # Pick random report config
+                if report_sets:
+                    r_cat, r_detail = random.choice(report_sets)
+                    self.process_one_account(item, cookie, url, r_cat, r_detail, proxy, headless)
+                
                 q.task_done()
 
         threads = []
