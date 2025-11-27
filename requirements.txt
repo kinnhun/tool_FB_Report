@@ -1,0 +1,11 @@
+# Facebook Auto Report Tool - Dependencies
+# 
+# Cài đặt: pip install -r requirements.txt
+
+# Selenium WebDriver - automation cho trình duyệt
+selenium>=4.0.0
+
+# WebDriver Manager - tự động tải và quản lý ChromeDriver
+webdriver-manager>=4.0.0
+
+# tkinter thường đã có sẵn với Python, không cần cài thêm
