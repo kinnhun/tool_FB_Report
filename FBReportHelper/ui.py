@@ -4,6 +4,8 @@ from tkinter import ttk, messagebox, Toplevel, filedialog
 import threading
 import queue
 import time
+import csv
+import os
 from browser import BrowserManager
 from logger import log_report
 import config
@@ -112,6 +114,9 @@ class ReportApp:
         
         self.btn_stop = ttk.Button(right_frame, text="DỪNG TẤT CẢ", command=self.stop_batch, state='disabled')
         self.btn_stop.pack(fill='x', pady=5)
+        
+        self.btn_history = ttk.Button(right_frame, text="Xem Lịch sử", command=self.view_history)
+        self.btn_history.pack(fill='x', pady=5)
         
         self.lbl_status = ttk.Label(right_frame, text="Sẵn sàng", relief="sunken", anchor="w")
         self.lbl_status.pack(side='bottom', fill='x', pady=10)
@@ -246,6 +251,98 @@ class ReportApp:
         if not sel: return
         item_id = sel[0]
         self.open_preview(item_id)
+
+    def view_history(self):
+        if not os.path.exists(config.LOG_FILE):
+             messagebox.showinfo("Info", "Chưa có lịch sử báo cáo.")
+             return
+
+        try:
+            with open(config.LOG_FILE, 'r', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                data = list(reader)
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không đọc được file log: {e}")
+            return
+
+        if not data:
+            messagebox.showinfo("Info", "File lịch sử trống.")
+            return
+
+        header = data[0]
+        rows = data[1:]
+        # Reverse to show newest first
+        rows.reverse()
+        
+        self.history_rows = rows
+        self.history_page = 0
+        self.history_page_size = 20
+        
+        top = Toplevel(self.root)
+        top.title("Lịch sử Báo cáo")
+        top.geometry("1000x600")
+        
+        # Treeview Frame
+        tree_frame = ttk.Frame(top)
+        tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Scrollbars
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical")
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal")
+        
+        self.hist_tree = ttk.Treeview(tree_frame, columns=header, show='headings', 
+                                      yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        
+        scrollbar_y.config(command=self.hist_tree.yview)
+        scrollbar_x.config(command=self.hist_tree.xview)
+        
+        scrollbar_y.pack(side='right', fill='y')
+        scrollbar_x.pack(side='bottom', fill='x')
+        self.hist_tree.pack(side='left', fill='both', expand=True)
+        
+        for col in header:
+            self.hist_tree.heading(col, text=col)
+            self.hist_tree.column(col, width=150, minwidth=100)
+            
+        # Pagination Controls
+        ctrl_frame = ttk.Frame(top, padding=10)
+        ctrl_frame.pack(fill='x', side='bottom')
+        
+        ttk.Button(ctrl_frame, text="<< Trước", command=lambda: self.change_hist_page(-1)).pack(side='left')
+        self.lbl_page_info = ttk.Label(ctrl_frame, text="Trang 1")
+        self.lbl_page_info.pack(side='left', padx=20)
+        ttk.Button(ctrl_frame, text="Sau >>", command=lambda: self.change_hist_page(1)).pack(side='left')
+        
+        self.load_hist_page()
+
+    def change_hist_page(self, delta):
+        new_page = self.history_page + delta
+        total_rows = len(self.history_rows)
+        if total_rows == 0: return
+        max_page = (total_rows - 1) // self.history_page_size
+        
+        if 0 <= new_page <= max_page:
+            self.history_page = new_page
+            self.load_hist_page()
+
+    def load_hist_page(self):
+        # Clear current items
+        for item in self.hist_tree.get_children():
+            self.hist_tree.delete(item)
+            
+        start = self.history_page * self.history_page_size
+        end = start + self.history_page_size
+        page_data = self.history_rows[start:end]
+        
+        for row in page_data:
+            self.hist_tree.insert("", "end", values=row)
+            
+        total_rows = len(self.history_rows)
+        if total_rows == 0:
+            max_page = 1
+        else:
+            max_page = (total_rows - 1) // self.history_page_size + 1
+        self.lbl_page_info.config(text=f"Trang {self.history_page + 1} / {max_page} (Tổng: {total_rows} dòng)")
 
     # --- BATCH LOGIC ---
     def start_batch(self):
