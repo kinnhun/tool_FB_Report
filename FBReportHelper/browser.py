@@ -77,25 +77,38 @@ class BrowserManager:
         return None
 
     def start_browser(self, proxy_string=None, headless=False):
+        global CACHED_DRIVER_PATH
+        
         options = Options()
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-infobars")
         options.add_argument("--start-maximized")
         
-        # Performance Optimizations
-        options.page_load_strategy = 'eager' # Interactive: Do not wait for full load
+        # Performance Optimizations - Aggressive
+        options.page_load_strategy = 'eager'
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-logging")
         options.add_argument("--log-level=3")
+        options.add_argument("--silent")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-extensions") # Disable all extensions by default (except proxy if added)
         
-        # Disable images if not strictly needed (optional, but helps performance)
-        # options.add_argument("--blink-settings=imagesEnabled=false") 
+        # Block heavy content (Images, CSS, Fonts, JS if possible but we need JS)
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.managed_default_content_settings.stylesheets": 2,
+            "profile.managed_default_content_settings.fonts": 2,
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.default_content_setting_values.geolocation": 2,
+            "profile.default_content_settings.popups": 0,
+        }
+        options.add_experimental_option("prefs", prefs)
 
         if headless:
             options.add_argument("--headless=new")
-            options.add_argument("--window-size=1280,720") # Smaller size for headless
+            options.add_argument("--window-size=800,600") # Minimal size
 
         binary_path = self.find_chrome_executable()
         if binary_path:
@@ -113,7 +126,12 @@ class BrowserManager:
                 options.add_argument(f'--proxy-server={p_str}')
 
         try:
-            self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+            # Cache driver path to avoid repeated checks
+            if not globals().get('CACHED_DRIVER_PATH'):
+                globals()['CACHED_DRIVER_PATH'] = ChromeDriverManager().install()
+            
+            service = Service(globals()['CACHED_DRIVER_PATH'])
+            self.driver = webdriver.Chrome(service=service, options=options)
             return True, "Khởi tạo trình duyệt thành công"
         except Exception as e:
             return False, f"Lỗi khởi tạo Browser: {str(e)}"

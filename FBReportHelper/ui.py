@@ -46,8 +46,8 @@ class ReportApp:
 
     def process_ui_queue(self):
         try:
-            # Process up to 50 events at a time to keep UI responsive
-            for _ in range(50):
+            # Process more events to drain queue faster
+            for _ in range(200):
                 task = self.ui_queue.get_nowait()
                 func, args = task
                 try:
@@ -57,7 +57,8 @@ class ReportApp:
                 self.ui_queue.task_done()
         except queue.Empty:
             pass
-        self.root.after(50, self.process_ui_queue)
+        # Check again sooner
+        self.root.after(20, self.process_ui_queue)
 
     def setup_ui(self):
 
@@ -661,6 +662,7 @@ class ReportApp:
         self.root.after(0, self.on_batch_finished)
 
     def process_one_account(self, item, cookie, url, cat, detail, proxy, headless):
+        # Reduce UI updates to essential states to save overhead
         self.update_item(item, "status", "Đang chạy...")
         
         # Extract c_user for logging
@@ -683,10 +685,12 @@ class ReportApp:
                 log_report(url, cat, detail, f"Start Failed: {msg}", c_user)
                 return
 
-            self.update_item(item, "status", "Inject Cookie...")
+            # Skip "Inject Cookie..." update to reduce UI lag
+            # self.update_item(item, "status", "Inject Cookie...")
             bm.inject_cookies(cookie)
             
-            self.update_item(item, "status", "Đang báo cáo...")
+            # Skip "Đang báo cáo..." update
+            # self.update_item(item, "status", "Đang báo cáo...")
             ok_report, msg_report = bm.navigate_and_report(url, cat, detail)
             
             if ok_report:
