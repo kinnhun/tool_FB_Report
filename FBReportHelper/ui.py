@@ -61,8 +61,7 @@ class ReportApp:
         self.root.after(20, self.process_ui_queue)
 
     def setup_ui(self):
-
-    def setup_ui(self):
+        # Setup UI
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill='both', expand=True)
         

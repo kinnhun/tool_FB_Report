@@ -94,6 +94,8 @@ class BrowserManager:
         options.add_argument("--silent")
         options.add_argument("--disable-software-rasterizer")
         options.add_argument("--disable-extensions") # Disable all extensions by default (except proxy if added)
+        options.add_argument("--lang=vi") # Force Vietnamese language
+        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
         
         # Block heavy content (Images, CSS, Fonts, JS if possible but we need JS)
         prefs = {
@@ -108,7 +110,9 @@ class BrowserManager:
 
         if headless:
             options.add_argument("--headless=new")
-            options.add_argument("--window-size=800,600") # Minimal size
+            options.add_argument("--window-size=1920,1080") # Desktop size
+        else:
+            options.add_argument("--window-size=1920,1080")
 
         binary_path = self.find_chrome_executable()
         if binary_path:
@@ -203,12 +207,15 @@ class BrowserManager:
         variants = [
             "Hành động với bài viết này",
             "Actions for this post",
+            "Xem thêm",
+            "See more",
             "More",
             "Xem thêm tùy chọn",
             "More options",
             "Options",
             "Tùy chọn",
-            "Thêm"
+            "Thêm",
+            "Khác"
         ]
         for v in variants:
             try:
@@ -218,6 +225,22 @@ class BrowserManager:
                     return True, f"Đã click nút 3 chấm (variant='{v}')"
             except Exception:
                 pass
+
+        # 1.5) Try specific Profile/Page 3-dots (often just an icon in a div with role button)
+        # Look for the button next to "Nhắn tin" (Message) or "Theo dõi" (Follow)
+        try:
+            # Find 'Nhắn tin' or 'Message' button, then look for the button next to it
+            ref_xpath = "//div[@aria-label='Nhắn tin' or @aria-label='Message' or .//span[text()='Nhắn tin'] or .//span[text()='Message']]"
+            ref_btn = self.driver.find_elements(By.XPATH, ref_xpath)
+            if ref_btn:
+                # Try to find a sibling button that contains an SVG (the 3 dots)
+                # This is heuristic: usually the 3-dots is in the same container or a sibling container
+                # We look for a nearby div/button with an SVG
+                nearby_xpath = "(//div[@aria-label='Nhắn tin' or @aria-label='Message']/following::div[@role='button'][.//svg])[1]"
+                if self.smart_click(nearby_xpath, timeout=1):
+                     return True, "Đã click nút 3 chấm (cạnh nút Nhắn tin)"
+        except Exception:
+            pass
 
         # 2) Try to detect svg with three circles: //svg[count(.//circle)=3] or //svg[count(circle)=3]
         try:
@@ -297,15 +320,15 @@ class BrowserManager:
             time.sleep(0.5)
 
             # click report button
-            if not self.click_button_by_text(["Báo cáo", "Report", "Tìm hỗ trợ", "Find support"]):
+            if not self.click_button_by_text(["Báo cáo", "Report", "Tìm hỗ trợ", "Find support", "Tìm hỗ trợ hoặc báo cáo", "Find support or report"]):
                 return False, "Không click được nút Báo cáo sau khi mở menu"
 
             # wait a bit for popup
-            time.sleep(0.8)
+            time.sleep(1.5)
 
             # If popup asks "Bạn muốn báo cáo điều gì?" (Page-specific), try choose "Thông tin về trang này" or "Bài viết cụ thể"
             # We'll try to click "Thông tin về trang này" if present first (safe), user can choose correct category/detail in UI
-            self.click_button_by_text(["Thông tin về trang này", "Information about this Page", "Bài viết cụ thể", "A specific post"])
+            self.click_button_by_text(["Thông tin về trang này", "Information about this Page", "Bài viết cụ thể", "A specific post", "Trang cá nhân", "Profile"])
 
             # Choose category (level 1)
             if category:
@@ -344,9 +367,43 @@ class BrowserManager:
         try:
             self.driver.get(url)
             # short wait for page render; heavier waits occur in smart_click
-            time.sleep(1.2)
-            ok, msg = self.execute_report_flow(category, detail)
-            return ok, msg
+            time.sleep(3) # Increased wait for full render
+            
+            # Check if "Report" button is already visible (e.g. on some Pages/Groups)
+            if self.click_button_by_text(["Báo cáo", "Report", "Tìm hỗ trợ hoặc báo cáo"], timeout=2):
+                 # If clicked directly, skip 3-dots
+                 pass
+            else:
+                 ok, msg = self.execute_report_flow(category, detail)
+                 return ok, msg
+            
+            # If we clicked "Report" directly above, continue flow
+            time.sleep(1.5)
+            self.click_button_by_text(["Thông tin về trang này", "Information about this Page", "Bài viết cụ thể", "A specific post", "Trang cá nhân", "Profile"])
+            
+            # Choose category (level 1)
+            if category:
+                if not self.click_button_by_text([category]):
+                    if not self.click_button_by_text([category.split()[0]]):
+                        return False, f"Không tìm thấy hạng mục '{category}'"
+            time.sleep(0.5)
+            self.click_next_action()
+            time.sleep(0.5)
+
+            # Choose detail (level 2)
+            if detail:
+                if not self.click_button_by_text([detail], timeout=4):
+                    parts = detail.split()
+                    if len(parts) >= 2:
+                        short = " ".join(parts[:2])
+                        self.click_button_by_text([short], timeout=2)
+            time.sleep(0.4)
+            self.click_next_action()
+            time.sleep(0.6)
+            self.click_next_action()
+
+            return True, "Quy trình báo cáo đã được thực hiện (kiểm tra UI để xác nhận)."
+
         except Exception as e:
             return False, f"Lỗi navigate_and_report: {str(e)}"
 
