@@ -92,6 +92,11 @@ class ReportApp:
         self.var_headless = tk.BooleanVar(value=True)
         ttk.Checkbutton(top_settings, text="Chạy ngầm (Headless)", variable=self.var_headless).pack(side='left', padx=10)
 
+        ttk.Label(top_settings, text="Ngôn ngữ:").pack(side='left', padx=(10,0))
+        self.combo_lang = ttk.Combobox(top_settings, values=["vi", "en"], width=5, state="readonly")
+        self.combo_lang.current(0)
+        self.combo_lang.pack(side='left', padx=5)
+
         ttk.Label(top_settings, text="Proxy chung:").pack(side='left', padx=(10,0))
         self.entry_proxy = ttk.Entry(top_settings, width=40)
         self.entry_proxy.pack(side='left', padx=5)
@@ -855,22 +860,49 @@ class ReportApp:
     def run_queue(self, q, num_threads, url, report_sets):
         proxy = self.entry_proxy.get().strip()
         headless = self.var_headless.get()
+        language = self.combo_lang.get()
         
         def worker():
+            # Create one browser per thread
+            bm = BrowserManager()
+            current_proxy = None
+            
             while not self.stop_event.is_set():
                 try:
                     item_id, cookie, acc_proxy = q.get(timeout=1)
                 except queue.Empty:
                     break
                 
+                # Determine proxy for this account
+                use_proxy = acc_proxy if acc_proxy else proxy
+                
+                # Check if we need to start/restart browser
+                # Restart if: browser not started OR proxy changed
+                if not bm.driver or use_proxy != current_proxy:
+                    if bm.driver:
+                        bm.close()
+                        bm = BrowserManager() # New instance to be safe
+                    
+                    ok, msg = bm.start_browser(use_proxy, headless=headless, language=language)
+                    if not ok:
+                        # Handle start error
+                        self.update_item(item_id, "status", "Lỗi Start")
+                        self.update_item(item_id, "result", msg)
+                        q.task_done()
+                        continue
+                    current_proxy = use_proxy
+
                 # Pick random report config
                 if report_sets:
                     r_cat, r_detail = random.choice(report_sets)
-                    # Use per-account proxy if provided, otherwise use global proxy
-                    use_proxy = acc_proxy if acc_proxy else proxy
-                    self.process_one_account(item_id, cookie, url, r_cat, r_detail, use_proxy, headless)
+                    # Pass the existing browser manager
+                    self.process_one_account(item_id, cookie, url, r_cat, r_detail, use_proxy, headless, browser_instance=bm, language=language)
                 
                 q.task_done()
+            
+            # Cleanup at end of thread
+            if bm:
+                bm.close()
 
         threads = []
         for _ in range(num_threads):
@@ -883,7 +915,7 @@ class ReportApp:
             
         self.root.after(0, self.on_batch_finished)
 
-    def process_one_account(self, item_id, cookie, url, cat, detail, proxy, headless):
+    def process_one_account(self, item_id, cookie, url, cat, detail, proxy, headless, browser_instance=None, language="vi"):
         # Reduce UI updates to essential states to save overhead
         status_msg = "Đang chạy..."
         if proxy:
@@ -911,17 +943,25 @@ class ReportApp:
             pass
 
         success_flag = False
-        bm = BrowserManager()
+        
+        # Use provided browser or create new
+        if browser_instance:
+            bm = browser_instance
+            bm.reset_session()
+        else:
+            bm = BrowserManager()
+        
         with self.lock:
             self.active_browsers[item_id] = bm
             
         try:
-            ok, msg = bm.start_browser(proxy, headless=headless)
-            if not ok:
-                self.update_item(item_id, "status", "Lỗi Start")
-                self.update_item(item_id, "result", msg)
-                log_report(url, cat, detail, f"Start Failed: {msg}", c_user)
-                return
+            if not browser_instance:
+                ok, msg = bm.start_browser(proxy, headless=headless, language=language)
+                if not ok:
+                    self.update_item(item_id, "status", "Lỗi Start")
+                    self.update_item(item_id, "result", msg)
+                    log_report(url, cat, detail, f"Start Failed: {msg}", c_user)
+                    return
 
             # Skip "Inject Cookie..." update to reduce UI lag
             # self.update_item(item_id, "status", "Inject Cookie...")
@@ -954,7 +994,10 @@ class ReportApp:
             b64 = bm.get_screenshot_base64()
             self.save_screenshot_to_disk(item_id, b64)
         finally:
-            bm.close()
+            # Only close if we created it locally
+            if not browser_instance:
+                bm.close()
+                
             with self.lock:
                 if item_id in self.active_browsers:
                     del self.active_browsers[item_id]

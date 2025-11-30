@@ -14,6 +14,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 import uuid
+import config
 
 class BrowserManager:
     def __init__(self):
@@ -76,7 +77,7 @@ class BrowserManager:
                     return p
         return None
 
-    def start_browser(self, proxy_string=None, headless=False):
+    def start_browser(self, proxy_string=None, headless=False, language="vi"):
         global CACHED_DRIVER_PATH
         
         options = Options()
@@ -93,6 +94,7 @@ class BrowserManager:
         options.add_argument("--log-level=3")
         options.add_argument("--silent")
         options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--blink-settings=imagesEnabled=false") # Disable images
         
         # Extra optimizations for speed and stability
         options.add_argument("--disable-background-networking")
@@ -107,17 +109,20 @@ class BrowserManager:
         
         # options.add_argument("--disable-extensions") # Moved down to avoid conflict with proxy extension
         options.add_argument("--ignore-certificate-errors") # Allow proxies with self-signed certs
-        options.add_argument("--lang=vi") # Force Vietnamese language
+        options.add_argument(f"--lang={language}") # Force language
         options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
         
         # Block heavy content (Images, CSS, Fonts, JS if possible but we need JS)
         prefs = {
             "profile.managed_default_content_settings.images": 2,
-            "profile.managed_default_content_settings.stylesheets": 2,
-            "profile.managed_default_content_settings.fonts": 2,
+            "profile.managed_default_content_settings.stylesheets": 1,
+            "profile.managed_default_content_settings.fonts": 1,
             "profile.default_content_setting_values.notifications": 2,
             "profile.default_content_setting_values.geolocation": 2,
             "profile.default_content_settings.popups": 0,
+            "profile.managed_default_content_settings.cookies": 1,
+            "profile.managed_default_content_settings.javascript": 1,
+            "profile.managed_default_content_settings.plugins": 2,
         }
         options.add_experimental_option("prefs", prefs)
 
@@ -180,19 +185,51 @@ class BrowserManager:
             service = Service(globals()['CACHED_DRIVER_PATH'])
             self.driver = webdriver.Chrome(service=service, options=options)
             
+            # Enable CDP to block resources aggressively
+            try:
+                self.driver.execute_cdp_cmd('Network.enable', {})
+                self.driver.execute_cdp_cmd('Network.setBlockedURLs', {
+                    "urls": [
+                        "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.ico", 
+                        "*.mp4", "*.avi", "*.webm",
+                        "*google-analytics*", "*doubleclick*", "*facebook.com/tr/*"
+                    ]
+                })
+            except:
+                pass
+
             # Set timeouts to prevent hanging on slow/dead proxies
-            self.driver.set_page_load_timeout(60)
-            self.driver.set_script_timeout(30)
+            self.driver.set_page_load_timeout(20)
+            self.driver.set_script_timeout(10)
             
             return True, "Khởi tạo trình duyệt thành công"
         except Exception as e:
             return False, f"Lỗi khởi tạo Browser: {str(e)}"
 
+    def reset_session(self):
+        if self.driver:
+            try:
+                self.driver.delete_all_cookies()
+                self.driver.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+            except:
+                pass
+
     def inject_cookies(self, raw_cookie_str):
         if not self.driver:
             return False, "Chưa khởi động trình duyệt"
         try:
-            self.driver.get("https://www.facebook.com/")
+            # 1. Ensure we are on facebook.com domain to set cookies
+            # If we are already on a facebook page (from previous run), we don't need to reload.
+            # If not, load a lightweight page to set domain context.
+            current_url = self.driver.current_url
+            if "facebook.com" not in current_url:
+                try:
+                    self.driver.get("https://www.facebook.com/robots.txt")
+                except:
+                    # If robots.txt fails, try root but stop quickly
+                    self.driver.get("https://www.facebook.com/")
+            
+            # 2. Parse and add cookies
             cookies = []
             raw = raw_cookie_str.replace('Cookie:', '').strip()
             pairs = [p.strip() for p in raw.split(';') if p.strip()]
@@ -200,18 +237,17 @@ class BrowserManager:
                 if '=' in pair:
                     name, value = pair.split('=', 1)
                     cookies.append({'name': name.strip(), 'value': value.strip(), 'domain': '.facebook.com', 'path': '/'})
+            
             for c in cookies:
                 try:
                     self.driver.add_cookie(c)
                 except Exception:
-                    # Một số cookie có thuộc tính không chấp nhận bởi Selenium -> bỏ qua
                     pass
-            self.driver.refresh()
-            time.sleep(2)
-            if "login" not in self.driver.current_url:
-                return True, "Đã Inject Cookie & Login OK"
-            else:
-                return False, "Inject xong nhưng chưa Login được (cookie có thể hết hạn hoặc checkpoint)"
+            
+            # 3. NO REFRESH, NO CHECK. Trust the cookie.
+            # We will validate login status when we navigate to the target URL.
+            return True, "Đã Inject Cookie"
+            
         except Exception as e:
             return False, f"Lỗi Inject Cookie: {str(e)}"
 
@@ -263,7 +299,8 @@ class BrowserManager:
             "Options",
             "Tùy chọn",
             "Thêm",
-            "Khác"
+            "Khác",
+            "See options"
         ]
         for v in variants:
             try:
@@ -293,8 +330,9 @@ class BrowserManager:
         # 1.6) Try specific aria-label from user request (Profile settings 3-dots)
         try:
             # "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
-            specific_aria = "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
-            xpath_specific = f"//div[@aria-label='{specific_aria}']"
+            specific_aria_vi = "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
+            specific_aria_en = "See more options in profile settings" # Approximate English
+            xpath_specific = f"//div[@aria-label='{specific_aria_vi}' or @aria-label='{specific_aria_en}']"
             if self.smart_click(xpath_specific, timeout=1):
                 return True, "Đã click nút 3 chấm (Profile Settings)"
         except Exception:
@@ -382,7 +420,14 @@ class BrowserManager:
                 return False, "Không click được nút Báo cáo sau khi mở menu"
 
             # wait a bit for popup
-            time.sleep(1.5)
+            # time.sleep(1.5)
+            # Wait for dialog header or next option
+            try:
+                WebDriverWait(self.driver, 3).until(
+                    EC.presence_of_element_located((By.XPATH, "//div[@role='dialog'] | //div[@aria-label='Đóng' or @aria-label='Close']"))
+                )
+            except:
+                pass
 
             # If popup asks "Bạn muốn báo cáo điều gì?" (Page-specific), try choose "Thông tin về trang này" or "Bài viết cụ thể"
             # We'll try to click "Thông tin về trang này" if present first (safe), user can choose correct category/detail in UI
@@ -390,27 +435,35 @@ class BrowserManager:
 
             # Choose category (level 1)
             if category:
-                if not self.click_button_by_text([category]):
+                cats = [category]
+                if hasattr(config, 'TRANSLATIONS') and category in config.TRANSLATIONS:
+                    cats.append(config.TRANSLATIONS[category])
+
+                if not self.click_button_by_text(cats):
                     # try a normalized match (lowercase contains)
                     if not self.click_button_by_text([category.split()[0]]):
                         return False, f"Không tìm thấy hạng mục '{category}'"
-            time.sleep(0.5)
+            # time.sleep(0.5) # Removed sleep
             # Next
             self.click_next_action()
-            time.sleep(0.5)
+            # time.sleep(0.5) # Removed sleep
 
             # Choose detail (level 2)
             if detail:
-                if not self.click_button_by_text([detail], timeout=4):
+                details = [detail]
+                if hasattr(config, 'TRANSLATIONS') and detail in config.TRANSLATIONS:
+                    details.append(config.TRANSLATIONS[detail])
+
+                if not self.click_button_by_text(details, timeout=4):
                     # fallback: try partial words
                     parts = detail.split()
                     if len(parts) >= 2:
                         short = " ".join(parts[:2])
                         self.click_button_by_text([short], timeout=2)
-            time.sleep(0.4)
+            # time.sleep(0.4) # Removed sleep
             # Next / Submit
             self.click_next_action()
-            time.sleep(0.6)
+            # time.sleep(0.6) # Removed sleep
             # Final try
             self.click_next_action()
 
@@ -422,48 +475,77 @@ class BrowserManager:
     def navigate_and_report(self, url, category, detail):
         if not self.driver:
             return False, "Browser chưa chạy"
-        try:
-            self.driver.get(url)
-            # short wait for page render; heavier waits occur in smart_click
-            time.sleep(3) # Increased wait for full render
-            
-            # Check if "Report" button is already visible (e.g. on some Pages/Groups)
-            if self.click_button_by_text(["Báo cáo", "Report", "Tìm hỗ trợ hoặc báo cáo"], timeout=2):
-                 # If clicked directly, skip 3-dots
-                 pass
-            else:
-                 ok, msg = self.execute_report_flow(category, detail)
-                 return ok, msg
-            
-            # If we clicked "Report" directly above, continue flow
-            time.sleep(1.5)
-            self.click_button_by_text(["Thông tin về trang này", "Information about this Page", "Bài viết cụ thể", "A specific post", "Trang cá nhân", "Profile"])
-            
-            # Choose category (level 1)
-            if category:
-                if not self.click_button_by_text([category]):
-                    if not self.click_button_by_text([category.split()[0]]):
-                        return False, f"Không tìm thấy hạng mục '{category}'"
-            time.sleep(0.5)
-            self.click_next_action()
-            time.sleep(0.5)
+        
+        # Retry mechanism for loading page
+        for attempt in range(2):
+            try:
+                self.driver.get(url)
+                
+                # FAST CHECK: Login or Checkpoint?
+                # We check this immediately. If we are redirected to login, cookie is dead.
+                current_url = self.driver.current_url
+                if "login" in current_url or "checkpoint" in current_url:
+                     return False, "Cookie die hoặc Checkpoint"
 
-            # Choose detail (level 2)
-            if detail:
-                if not self.click_button_by_text([detail], timeout=4):
-                    parts = detail.split()
-                    if len(parts) >= 2:
-                        short = " ".join(parts[:2])
-                        self.click_button_by_text([short], timeout=2)
-            time.sleep(0.4)
-            self.click_next_action()
-            time.sleep(0.6)
-            self.click_next_action()
+                # Wait for body to ensure basic layout is present
+                try:
+                    WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                except:
+                    pass
+                
+                # Check if "Report" button is already visible (e.g. on some Pages/Groups)
+                if self.click_button_by_text(["Báo cáo", "Report", "Tìm hỗ trợ hoặc báo cáo"], timeout=3):
+                     # If clicked directly, skip 3-dots
+                     pass
+                else:
+                     ok, msg = self.execute_report_flow(category, detail)
+                     if not ok:
+                         if attempt < 1: # If first attempt failed, refresh and try again
+                             continue
+                         return ok, msg
+                     return True, msg
+                
+                # If we clicked "Report" directly above, continue flow
+                # time.sleep(0.5) # Removed sleep
+                self.click_button_by_text(["Thông tin về trang này", "Information about this Page", "Bài viết cụ thể", "A specific post", "Trang cá nhân", "Profile"])
+                
+                # Choose category (level 1)
+                if category:
+                    cats = [category]
+                    if hasattr(config, 'TRANSLATIONS') and category in config.TRANSLATIONS:
+                        cats.append(config.TRANSLATIONS[category])
 
-            return True, "Quy trình báo cáo đã được thực hiện (kiểm tra UI để xác nhận)."
+                    if not self.click_button_by_text(cats):
+                        if not self.click_button_by_text([category.split()[0]]):
+                            return False, f"Không tìm thấy hạng mục '{category}'"
+                # time.sleep(0.2) # Removed sleep
+                self.click_next_action()
+                # time.sleep(0.2) # Removed sleep
 
-        except Exception as e:
-            return False, f"Lỗi navigate_and_report: {str(e)}"
+                # Choose detail (level 2)
+                if detail:
+                    details = [detail]
+                    if hasattr(config, 'TRANSLATIONS') and detail in config.TRANSLATIONS:
+                        details.append(config.TRANSLATIONS[detail])
+
+                    if not self.click_button_by_text(details, timeout=2):
+                        parts = detail.split()
+                        if len(parts) >= 2:
+                            short = " ".join(parts[:2])
+                            self.click_button_by_text([short], timeout=1)
+                # time.sleep(0.2) # Removed sleep
+                self.click_next_action()
+                # time.sleep(0.2) # Removed sleep
+                self.click_next_action()
+
+                return True, "Quy trình báo cáo đã được thực hiện (kiểm tra UI để xác nhận)."
+
+            except Exception as e:
+                if attempt < 1:
+                    continue
+                return False, f"Lỗi navigate_and_report: {str(e)}"
+        
+        return False, "Không thể tải trang hoặc tìm nút báo cáo sau 2 lần thử"
 
     def get_screenshot_base64(self):
         # This method is called from UI thread, but driver is in worker thread.
