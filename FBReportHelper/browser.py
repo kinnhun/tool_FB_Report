@@ -318,9 +318,24 @@ class BrowserManager:
             specific_aria_vi = "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
             specific_aria_en = "See more options in profile settings" # Approximate English
             # User provided HTML shows it's a div with role='button'
-            xpath_specific = f"//div[(@aria-label='{specific_aria_vi}' or @aria-label='{specific_aria_en}') and @role='button']"
+            # Also added "Profile settings see more options" based on user snippet
+            xpath_specific = f"//div[(@aria-label='{specific_aria_vi}' or @aria-label='{specific_aria_en}' or @aria-label='Profile settings see more options') and @role='button']"
             if self.smart_click(xpath_specific, timeout=2):
                 return True, "Đã click nút 3 chấm (Profile Settings)"
+        except Exception:
+            pass
+
+        # 0.5) Try finding the "More" tab/button specifically (common in English UI)
+        try:
+            # Based on user snippet: <div role="tab" ...> ... <span>More</span> ... </div>
+            # Updated to include role='button' and exact text match for robustness
+            # Also added direct aria-label check for role=tab
+            xpath_more_tab = (
+                "//div[@role='tab' or @role='button'][.//span[normalize-space(.)='More']] | "
+                "//div[@role='tab'][@aria-label='More']"
+            )
+            if self.smart_click(xpath_more_tab, timeout=1):
+                 return True, "Đã click nút More (Tab/Button)"
         except Exception:
             pass
 
@@ -342,7 +357,8 @@ class BrowserManager:
         for v in variants:
             try:
                 # match aria-label exactly or span text contains
-                xpath = f"//div[@aria-label='{v}'] | //button[@aria-label='{v}'] | //span[contains(normalize-space(.), '{v}')]"
+                # Added role='tab' support
+                xpath = f"//div[@aria-label='{v}'] | //button[@aria-label='{v}'] | //div[@role='tab'][@aria-label='{v}'] | //span[contains(normalize-space(.), '{v}')]"
                 if self.smart_click(xpath, timeout=1):
                     return True, f"Đã click nút 3 chấm (variant='{v}')"
             except Exception:
@@ -460,7 +476,7 @@ class BrowserManager:
 
             # If popup asks "Bạn muốn báo cáo điều gì?" (Page-specific), try choose "Thông tin về trang này" or "Bài viết cụ thể"
             # We'll try to click "Thông tin về trang này" if present first (safe), user can choose correct category/detail in UI
-            self.click_button_by_text(["Thông tin về trang này", "Information about this Page", "Bài viết cụ thể", "A specific post", "Trang cá nhân", "Profile"])
+            self.click_button_by_text(["Thông tin về trang này", "Something about this page", "Information about this Page", "Bài viết cụ thể", "A specific post", "Trang cá nhân", "Profile"])
 
             # Choose category (level 1)
             if category:
@@ -518,7 +534,9 @@ class BrowserManager:
                     # More specific XPaths based on user provided HTML
                     input_xpaths = [
                         "//input[@aria-label='Tên']",
+                        "//input[@aria-label='Name']",
                         "//input[@aria-label='URL hoặc tên Trang Facebook']",
+                        "//input[@aria-label='URL or Facebook Page name']",
                         "//input[@role='combobox'][@type='search']"
                     ]
                     
@@ -654,7 +672,7 @@ class BrowserManager:
                 
                 # If we clicked "Report" directly above, continue flow
                 # time.sleep(0.5) # Removed sleep
-                self.click_button_by_text(["Thông tin về trang này", "Information about this Page", "Bài viết cụ thể", "A specific post", "Trang cá nhân", "Profile"])
+                self.click_button_by_text(["Thông tin về trang này", "Something about this page", "Information about this Page", "Bài viết cụ thể", "A specific post", "Trang cá nhân", "Profile"])
                 
                 # Choose category (level 1)
                 if category:
