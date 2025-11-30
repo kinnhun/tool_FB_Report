@@ -9,6 +9,7 @@ import os
 import random
 import shutil
 import base64
+import uuid
 from browser import BrowserManager
 from logger import log_report, migrate_log_if_needed
 import config
@@ -25,8 +26,15 @@ class ReportApp:
         # State
         self.is_running = False
         self.stop_event = threading.Event()
-        self.active_browsers = {} # {tree_item_id: browser_instance}
-        self.account_data = {} # {tree_item_id: full_cookie}
+        self.active_browsers = {} # {account_id: browser_instance}
+        
+        # Data Model
+        self.all_accounts = [] # List of dicts: {id, c_user, xs, cookie, status, result}
+        self.account_map = {} # {id: dict} for O(1) lookup
+        self.filtered_accounts = []
+        self.current_page = 0
+        self.page_size = 50
+        
         # self.final_screenshots = {} # REMOVED: Save to disk instead
         self.report_sets = [] # List of (category, detail) tuples
         self.lock = threading.Lock()
@@ -43,6 +51,13 @@ class ReportApp:
         
         # Start UI consumer
         self.process_ui_queue()
+        
+        # Batch timing & counters
+        self.batch_start_time = None
+        self.processed_count = 0
+        self.success_count = 0
+        self.failure_count = 0
+        self.total_accounts_in_batch = 0
 
     def process_ui_queue(self):
         try:
@@ -64,10 +79,24 @@ class ReportApp:
         # Setup UI
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill='both', expand=True)
+
+        # Use a PanedWindow so panels are resizable and the right panel won't be hidden
+        paned = ttk.PanedWindow(main_frame, orient='horizontal')
+        paned.pack(fill='both', expand=True)
+        self.paned = paned
         
         # === LEFT PANEL: ACCOUNT LIST & SETTINGS ===
-        left_frame = ttk.LabelFrame(main_frame, text="1. Quản lý Tài khoản (Cookies)", padding=10)
-        left_frame.pack(side='left', fill='both', expand=True, padx=5)
+        left_frame = ttk.LabelFrame(paned, text="1. Quản lý Tài khoản (Cookies)", padding=10)
+        # Add left and right frames to paned window. Left gets more weight.
+        paned.add(left_frame, weight=3)
+        # Ensure left pane keeps a minimum size so its controls are not hidden
+        try:
+            paned.paneconfigure(left_frame, minsize=450)
+        except Exception:
+            try:
+                left_frame.config(width=450)
+            except Exception:
+                pass
         
         # Control Bar for List
         control_frame = ttk.Frame(left_frame)
@@ -85,6 +114,10 @@ class ReportApp:
         self.entry_xs = ttk.Entry(cookie_frame, width=15)
         self.entry_xs.pack(side='left', padx=5)
         
+        ttk.Label(cookie_frame, text="Proxy:").pack(side='left', padx=(6,0))
+        self.entry_cookie_proxy = ttk.Entry(cookie_frame, width=20)
+        self.entry_cookie_proxy.pack(side='left', padx=5)
+
         ttk.Button(cookie_frame, text="Thêm Cookie", command=self.add_cookie).pack(side='left', padx=5)
 
         # File Actions
@@ -99,17 +132,32 @@ class ReportApp:
         
         ttk.Button(file_frame, text="Xóa chọn", command=self.delete_selected).pack(side='left')
 
+        # Search & Filter
+        search_frame = ttk.Frame(left_frame)
+        search_frame.pack(fill='x', pady=5)
+        ttk.Label(search_frame, text="Tìm kiếm:").pack(side='left')
+        self.entry_search = ttk.Entry(search_frame)
+        self.entry_search.pack(side='left', fill='x', expand=True, padx=5)
+        self.entry_search.bind("<KeyRelease>", self.on_search)
+        
+        self.combo_status_filter = ttk.Combobox(search_frame, values=["Tất cả", "Chờ", "Đang chạy...", "Hoàn thành", "Lỗi", "Lỗi Start"], state="readonly", width=15)
+        self.combo_status_filter.current(0)
+        self.combo_status_filter.pack(side='left', padx=5)
+        self.combo_status_filter.bind("<<ComboboxSelected>>", self.on_search)
+
         # Treeview
-        columns = ("stt", "cookie", "status", "result", "view")
+        columns = ("stt", "cookie", "proxy", "status", "result", "view")
         self.tree = ttk.Treeview(left_frame, columns=columns, show='headings', selectmode='extended')
         self.tree.heading("stt", text="#")
         self.tree.heading("cookie", text="Cookie (Ẩn)")
+        self.tree.heading("proxy", text="Proxy")
         self.tree.heading("status", text="Trạng thái")
         self.tree.heading("result", text="Kết quả")
         self.tree.heading("view", text="Hành động")
         
         self.tree.column("stt", width=40, anchor='center')
         self.tree.column("cookie", width=150)
+        self.tree.column("proxy", width=120)
         self.tree.column("status", width=100)
         self.tree.column("result", width=200)
         self.tree.column("view", width=80, anchor='center')
@@ -119,6 +167,16 @@ class ReportApp:
         self.tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
         
+        # Pagination Controls
+        page_frame = ttk.Frame(left_frame)
+        page_frame.pack(fill='x', pady=5)
+        ttk.Button(page_frame, text="<< Trước", command=lambda: self.change_page(-1)).pack(side='left')
+        self.lbl_page = ttk.Label(page_frame, text="Trang 1/1")
+        self.lbl_page.pack(side='left', padx=10)
+        ttk.Button(page_frame, text="Sau >>", command=lambda: self.change_page(1)).pack(side='left')
+        ttk.Label(page_frame, text="Tổng: 0").pack(side='right', padx=5)
+        self.lbl_total = page_frame.winfo_children()[-1]
+
         # Bind click for View column
         self.tree.bind("<Button-1>", self.on_tree_click)
         
@@ -127,9 +185,9 @@ class ReportApp:
         self.context_menu = tk.Menu(self.root, tearoff=0)
         self.context_menu.add_command(label="Xem trình duyệt (Screenshot)", command=self.view_browser_snapshot)
 
-        # Settings Frame (Bottom Left)
+        # Settings Frame (Bottom Left) - pinned to bottom so it stays visible
         settings_frame = ttk.Frame(left_frame)
-        settings_frame.pack(fill='x', pady=10)
+        settings_frame.pack(side='bottom', fill='x', pady=10)
         
         ttk.Label(settings_frame, text="Số luồng (Threads):").pack(side='left')
         self.spin_threads = ttk.Spinbox(settings_frame, from_=1, to=50, width=5)
@@ -140,12 +198,24 @@ class ReportApp:
         ttk.Checkbutton(settings_frame, text="Chạy ngầm (Headless)", variable=self.var_headless).pack(side='left', padx=10)
 
         ttk.Label(settings_frame, text="Proxy chung:").pack(side='left', padx=(10,0))
-        self.entry_proxy = ttk.Entry(settings_frame, width=20)
-        self.entry_proxy.pack(side='left', padx=5)
+        self.entry_proxy = ttk.Entry(settings_frame)
+        # Make proxy entry expand so it remains visible when left pane narrows
+        self.entry_proxy.pack(side='left', padx=5, fill='x', expand=True)
 
         # === RIGHT PANEL: REPORT CONFIG ===
-        right_frame = ttk.LabelFrame(main_frame, text="2. Cấu hình Báo cáo", padding=10)
-        right_frame.pack(side='right', fill='both', expand=False, padx=5, ipadx=10)
+        right_frame = ttk.LabelFrame(paned, text="2. Cấu hình Báo cáo", padding=10)
+        # Keep a reasonable minimum width so the panel isn't fully hidden when window is small
+        paned.add(right_frame, weight=1)
+        # Set minimum size via paneconfigure to avoid unsupported add() option on some Tk versions
+        try:
+            paned.paneconfigure(right_frame, minsize=280)
+        except Exception:
+            # Fallback: set a fixed width on the frame so it doesn't disappear
+            try:
+                right_frame.config(width=280)
+            except Exception:
+                pass
+        self.right_frame = right_frame
         
         ttk.Label(right_frame, text="Link cần báo cáo:").pack(anchor='w')
         self.entry_url = ttk.Entry(right_frame, width=40)
@@ -183,6 +253,18 @@ class ReportApp:
         
         self.lbl_status = ttk.Label(right_frame, text="Sẵn sàng", relief="sunken", anchor="w")
         self.lbl_status.pack(side='bottom', fill='x', pady=10)
+        # Batch stats (Elapsed, Remaining, Success %)
+        stats_frame = ttk.Frame(right_frame)
+        stats_frame.pack(side='bottom', fill='x', pady=(0,6))
+
+        self.lbl_elapsed = ttk.Label(stats_frame, text="Elapsed: 00:00:00")
+        self.lbl_elapsed.pack(side='left')
+
+        self.lbl_remaining = ttk.Label(stats_frame, text="Remaining: --:--:--")
+        self.lbl_remaining.pack(side='left', padx=10)
+
+        self.lbl_success = ttk.Label(stats_frame, text="Success: 0% (0/0)")
+        self.lbl_success.pack(side='left', padx=10)
 
         # Init
         if config.CATEGORIES:
@@ -193,20 +275,88 @@ class ReportApp:
     def add_cookie(self):
         c_user = self.entry_c_user.get().strip()
         xs = self.entry_xs.get().strip()
+        proxy_val = self.entry_cookie_proxy.get().strip()
         
         if c_user and xs:
-            # Format: c_user=...;xs=...
             full_cookie = f"c_user={c_user};xs={xs}"
-            
-            # Mask cookie for display
             display_c = f"{c_user} | {xs[:5]}..."
-            item_id = self.tree.insert("", "end", values=(len(self.tree.get_children())+1, display_c, "Chờ", "", "Xem"))
-            self.account_data[item_id] = full_cookie
+            
+            new_acc = {
+                "id": str(uuid.uuid4()),
+                "c_user": c_user,
+                "xs": xs,
+                "proxy": proxy_val,
+                "cookie": full_cookie,
+                "display_c": display_c,
+                "status": "Chờ",
+                "result": ""
+            }
+            self.all_accounts.append(new_acc)
+            self.account_map[new_acc['id']] = new_acc
+            self.refresh_data()
             
             self.entry_c_user.delete(0, 'end')
             self.entry_xs.delete(0, 'end')
+            self.entry_cookie_proxy.delete(0, 'end')
         else:
             messagebox.showwarning("Thiếu thông tin", "Vui lòng nhập cả c_user và xs")
+
+    def refresh_data(self):
+        # Filter
+        search_txt = self.entry_search.get().lower()
+        status_filter = self.combo_status_filter.get()
+        
+        filtered = []
+        for acc in self.all_accounts:
+            # Search text in c_user or result
+            match_text = (search_txt in acc['c_user'].lower()) or (search_txt in acc['result'].lower())
+            # Filter status
+            match_status = True
+            if status_filter != "Tất cả":
+                if status_filter == "Lỗi" and "Lỗi" in acc['status']:
+                    match_status = True
+                else:
+                    match_status = (acc['status'] == status_filter)
+            
+            if match_text and match_status:
+                filtered.append(acc)
+        
+        self.filtered_accounts = filtered
+        
+        # Pagination
+        total = len(self.filtered_accounts)
+        max_page = (total - 1) // self.page_size
+        if self.current_page > max_page: self.current_page = max_page
+        if self.current_page < 0: self.current_page = 0
+        
+        start = self.current_page * self.page_size
+        end = start + self.page_size
+        page_items = self.filtered_accounts[start:end]
+        
+        # Update Treeview
+        # Clear all
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+            
+        for i, acc in enumerate(page_items):
+            # Use acc['id'] as iid if possible, but treeview iid must be unique in tree.
+            # We use acc['id'] to map back.
+            self.tree.insert("", "end", iid=acc['id'], values=(start + i + 1, acc['display_c'], acc.get('proxy', ''), acc['status'], acc['result'], "Xem"))
+            
+        self.lbl_page.config(text=f"Trang {self.current_page + 1}/{max_page + 1 if total > 0 else 1}")
+        self.lbl_total.config(text=f"Tổng: {total}")
+
+    def on_search(self, event=None):
+        self.current_page = 0
+        self.refresh_data()
+
+    def change_page(self, delta):
+        total = len(self.filtered_accounts)
+        max_page = (total - 1) // self.page_size
+        new_page = self.current_page + delta
+        if 0 <= new_page <= max_page:
+            self.current_page = new_page
+            self.refresh_data()
 
     def import_cookies(self):
         fp = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")])
@@ -214,16 +364,14 @@ class ReportApp:
             try:
                 with open(fp, 'r', encoding='utf-8-sig') as f:
                     reader = csv.reader(f)
-                    # Try to detect header
                     header = next(reader, None)
                     if not header: return
                     
-                    # Check columns
                     try:
-                        # Normalize headers
                         headers = [h.strip().lower() for h in header]
                         idx_c = headers.index('c_user')
                         idx_xs = headers.index('xs')
+                        idx_proxy = headers.index('proxy') if 'proxy' in headers else None
                     except ValueError:
                         messagebox.showerror("Lỗi Format", "File CSV cần có cột 'c_user' và 'xs'")
                         return
@@ -236,9 +384,21 @@ class ReportApp:
                             if c_user and xs:
                                 full_cookie = f"c_user={c_user};xs={xs}"
                                 display_c = f"{c_user} | {xs[:5]}..."
-                                item_id = self.tree.insert("", "end", values=(len(self.tree.get_children())+1, display_c, "Chờ", "", "Xem"))
-                                self.account_data[item_id] = full_cookie
+                                proxy_val = row[idx_proxy].strip() if idx_proxy is not None and len(row) > idx_proxy else ""
+                                new_acc = {
+                                    "id": str(uuid.uuid4()),
+                                    "c_user": c_user,
+                                    "xs": xs,
+                                    "proxy": proxy_val,
+                                    "cookie": full_cookie,
+                                    "display_c": display_c,
+                                    "status": "Chờ",
+                                    "result": ""
+                                }
+                                self.all_accounts.append(new_acc)
+                                self.account_map[new_acc['id']] = new_acc
                                 count += 1
+                    self.refresh_data()
                     messagebox.showinfo("Thành công", f"Đã nhập {count} tài khoản.")
             except Exception as e:
                 messagebox.showerror("Lỗi", f"Không đọc được file: {e}")
@@ -249,34 +409,39 @@ class ReportApp:
             try:
                 with open(fp, 'w', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
-                    writer.writerow(["c_user", "xs"])
-                    
-                    for item_id, full_cookie in self.account_data.items():
-                        # Parse back c_user and xs
-                        try:
-                            parts = full_cookie.split(';')
-                            c_val = ""
-                            xs_val = ""
-                            for p in parts:
-                                if 'c_user=' in p:
-                                    c_val = p.split('=')[1]
-                                if 'xs=' in p:
-                                    xs_val = p.split('=')[1]
-                            writer.writerow([c_val, xs_val])
-                        except:
-                            pass
+                    # include proxy column
+                    writer.writerow(["c_user", "xs", "proxy"])
+                    for acc in self.all_accounts:
+                        writer.writerow([acc['c_user'], acc['xs'], acc.get('proxy','')])
                 messagebox.showinfo("Thành công", "Đã xuất file CSV.")
             except Exception as e:
                 messagebox.showerror("Lỗi", f"Không ghi được file: {e}")
 
     def delete_selected(self):
-        for item in self.tree.selection():
-            self.tree.delete(item)
-            if item in self.account_data:
-                del self.account_data[item]
-        # Re-index STT
-        for i, item in enumerate(self.tree.get_children()):
-            self.tree.set(item, "stt", i+1)
+        selected_ids = self.tree.selection()
+        if not selected_ids: return
+        
+        # Remove from all_accounts
+        # selected_ids contains the 'id' (uuid) because we set iid=acc['id']
+        self.all_accounts = [acc for acc in self.all_accounts if acc['id'] not in selected_ids]
+        # Rebuild map
+        self.account_map = {acc['id']: acc for acc in self.all_accounts}
+        
+        self.refresh_data()
+        
+        # If no accounts left, cleanup temp screenshots folder
+        try:
+            if not self.all_accounts:
+                if os.path.exists(self.temp_dir):
+                    for fname in os.listdir(self.temp_dir):
+                        fpath = os.path.join(self.temp_dir, fname)
+                        try:
+                            if os.path.isfile(fpath):
+                                os.remove(fpath)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     def on_category_change(self, event=None):
         cat = self.combo_category.get()
@@ -297,16 +462,20 @@ class ReportApp:
         region = self.tree.identify("region", event.x, event.y)
         if region == "cell":
             col = self.tree.identify_column(event.x)
-            if col == "#5": # Column 'view'
+            if col == "#6": # Column 'view'
                 item_id = self.tree.identify_row(event.y)
                 if item_id:
                     self.open_preview(item_id)
 
     def open_preview(self, item_id):
-        status = self.tree.set(item_id, "status")
+        # Find account in all_accounts (O(1))
+        acc = self.account_map.get(item_id)
+        if not acc: return
+        
+        status = acc['status']
         
         top = Toplevel(self.root)
-        top.title(f"Xem: {item_id} - {status}")
+        top.title(f"Xem: {acc['c_user']} - {status}")
         top.geometry("800x600")
         
         lbl_img = tk.Label(top, text="Đang tải hình ảnh...", bg="black", fg="white")
@@ -345,8 +514,8 @@ class ReportApp:
                 self.show_image(lbl_img, b64)
             return
 
-        # Refresh every 1s
-        top.after(1000, lambda: self.update_live_preview(top, lbl_img, item_id))
+        # Refresh every 2s to reduce load
+        top.after(2000, lambda: self.update_live_preview(top, lbl_img, item_id))
 
     def show_image(self, lbl, b64):
         try:
@@ -392,7 +561,8 @@ class ReportApp:
         # Reverse to show newest first
         rows.reverse()
         
-        self.history_rows = rows
+        self.history_rows_all = rows # Store all rows for filtering
+        self.history_rows = rows # Current filtered rows
         self.history_page = 0
         self.history_page_size = 20
         
@@ -400,6 +570,15 @@ class ReportApp:
         top.title("Lịch sử Báo cáo")
         top.geometry("1000x600")
         
+        # Filter Frame
+        filter_frame = ttk.Frame(top)
+        filter_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Label(filter_frame, text="Tìm kiếm (URL, Account, Kết quả...):").pack(side='left')
+        self.entry_hist_search = ttk.Entry(filter_frame)
+        self.entry_hist_search.pack(side='left', fill='x', expand=True, padx=5)
+        self.entry_hist_search.bind("<KeyRelease>", self.filter_history)
+
         # Treeview Frame
         tree_frame = ttk.Frame(top)
         tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
@@ -433,6 +612,19 @@ class ReportApp:
         
         ttk.Button(ctrl_frame, text="Xuất Excel (.xlsx)", command=self.export_history_xlsx).pack(side='right', padx=10)
         
+        self.load_hist_page()
+
+    def filter_history(self, event=None):
+        keyword = self.entry_hist_search.get().lower()
+        if not keyword:
+            self.history_rows = list(self.history_rows_all)
+        else:
+            # Filter if keyword appears in any column of the row
+            self.history_rows = [
+                row for row in self.history_rows_all 
+                if any(keyword in str(cell).lower() for cell in row)
+            ]
+        self.history_page = 0
         self.load_hist_page()
 
     def change_hist_page(self, delta):
@@ -491,16 +683,42 @@ class ReportApp:
                 idx_xs = headers['xs']
                 
                 count = 0
+                # Determine if there's a proxy column in headers (header keys map to indices)
+                proxy_idx = None
+                # headers dict maps lowercased header -> index, we can check
+                for k, v in headers.items():
+                    if k == 'proxy':
+                        proxy_idx = v
+                        break
+
                 for row in sheet.iter_rows(min_row=2, values_only=True):
-                    if row[idx_c] and row[idx_xs]:
-                        c_user = str(row[idx_c]).strip()
-                        xs = str(row[idx_xs]).strip()
-                        
-                        full_cookie = f"c_user={c_user};xs={xs}"
-                        display_c = f"{c_user} | {xs[:5]}..."
-                        item_id = self.tree.insert("", "end", values=(len(self.tree.get_children())+1, display_c, "Chờ", "", "Xem"))
-                        self.account_data[item_id] = full_cookie
-                        count += 1
+                    try:
+                        if row[idx_c] and row[idx_xs]:
+                            c_user = str(row[idx_c]).strip()
+                            xs = str(row[idx_xs]).strip()
+
+                            full_cookie = f"c_user={c_user};xs={xs}"
+                            display_c = f"{c_user} | {xs[:5]}..."
+                            proxy_val = ''
+                            if proxy_idx is not None and len(row) > proxy_idx and row[proxy_idx] is not None:
+                                proxy_val = str(row[proxy_idx]).strip()
+
+                            new_acc = {
+                                "id": str(uuid.uuid4()),
+                                "c_user": c_user,
+                                "xs": xs,
+                                "proxy": proxy_val,
+                                "cookie": full_cookie,
+                                "display_c": display_c,
+                                "status": "Chờ",
+                                "result": ""
+                            }
+                            self.all_accounts.append(new_acc)
+                            self.account_map[new_acc['id']] = new_acc
+                            count += 1
+                    except Exception:
+                        continue
+                self.refresh_data()
                 messagebox.showinfo("Thành công", f"Đã nhập {count} tài khoản từ Excel.")
                 
             except Exception as e:
@@ -518,21 +736,11 @@ class ReportApp:
             try:
                 wb = openpyxl.Workbook()
                 ws = wb.active
-                ws.append(["c_user", "xs"])
-                
-                for item_id, full_cookie in self.account_data.items():
-                    try:
-                        parts = full_cookie.split(';')
-                        c_val = ""
-                        xs_val = ""
-                        for p in parts:
-                            if 'c_user=' in p:
-                                c_val = p.split('=')[1]
-                            if 'xs=' in p:
-                                xs_val = p.split('=')[1]
-                        ws.append([c_val, xs_val])
-                    except:
-                        pass
+                # include proxy column
+                ws.append(["c_user", "xs", "proxy"])
+
+                for acc in self.all_accounts:
+                    ws.append([acc['c_user'], acc['xs'], acc.get('proxy', '')])
                 
                 wb.save(fp)
                 messagebox.showinfo("Thành công", "Đã xuất file Excel (.xlsx).")
@@ -587,8 +795,8 @@ class ReportApp:
             messagebox.showwarning("Thiếu URL", "Vui lòng nhập URL.")
             return
             
-        items = self.tree.get_children()
-        if not items:
+        # Use all_accounts instead of tree items
+        if not self.all_accounts:
             messagebox.showwarning("Thiếu Account", "Danh sách tài khoản trống.")
             return
 
@@ -597,17 +805,28 @@ class ReportApp:
         self.btn_run.config(state='disabled')
         self.btn_stop.config(state='normal')
         
-        # Reset status
-        for item in items:
-            self.tree.set(item, "status", "Chờ")
-            self.tree.set(item, "result", "")
+        # Reset status for all accounts
+        for acc in self.all_accounts:
+            acc['status'] = "Chờ"
+            acc['result'] = ""
+        self.refresh_data()
+
+        # Initialize batch timing and counters
+        self.batch_start_time = time.time()
+        with self.lock:
+            self.processed_count = 0
+            self.success_count = 0
+            self.failure_count = 0
+            self.total_accounts_in_batch = len(self.all_accounts)
+
+        # Start periodic stats updater
+        self.update_batch_stats()
             
         # Queue
         q = queue.Queue()
-        for item in items:
-            # Retrieve full cookie from dict
-            cookie = self.account_data.get(item, "")
-            q.put((item, cookie))
+        for acc in self.all_accounts:
+            # enqueue id, cookie, and per-account proxy (if any)
+            q.put((acc['id'], acc['cookie'], acc.get('proxy', '').strip()))
             
         # Threads
         try:
@@ -638,14 +857,16 @@ class ReportApp:
         def worker():
             while not self.stop_event.is_set():
                 try:
-                    item, cookie = q.get(timeout=1)
+                    item_id, cookie, acc_proxy = q.get(timeout=1)
                 except queue.Empty:
                     break
                 
                 # Pick random report config
                 if report_sets:
                     r_cat, r_detail = random.choice(report_sets)
-                    self.process_one_account(item, cookie, url, r_cat, r_detail, proxy, headless)
+                    # Use per-account proxy if provided, otherwise use global proxy
+                    use_proxy = acc_proxy if acc_proxy else proxy
+                    self.process_one_account(item_id, cookie, url, r_cat, r_detail, use_proxy, headless)
                 
                 q.task_done()
 
@@ -660,9 +881,24 @@ class ReportApp:
             
         self.root.after(0, self.on_batch_finished)
 
-    def process_one_account(self, item, cookie, url, cat, detail, proxy, headless):
+    def process_one_account(self, item_id, cookie, url, cat, detail, proxy, headless):
         # Reduce UI updates to essential states to save overhead
-        self.update_item(item, "status", "Đang chạy...")
+        status_msg = "Đang chạy..."
+        if proxy:
+            # Show short proxy info
+            try:
+                # If user:pass@host:port -> host
+                # If host:port -> host
+                p_clean = proxy.strip()
+                if "@" in p_clean:
+                    host = p_clean.split("@")[1].split(":")[0]
+                else:
+                    host = p_clean.split(":")[0]
+                status_msg = f"Run ({host})..."
+            except:
+                status_msg = "Run (Proxy)..."
+        
+        self.update_item(item_id, "status", status_msg)
         
         # Extract c_user for logging
         c_user = ""
@@ -672,56 +908,80 @@ class ReportApp:
         except:
             pass
 
+        success_flag = False
         bm = BrowserManager()
         with self.lock:
-            self.active_browsers[item] = bm
+            self.active_browsers[item_id] = bm
             
         try:
             ok, msg = bm.start_browser(proxy, headless=headless)
             if not ok:
-                self.update_item(item, "status", "Lỗi Start")
-                self.update_item(item, "result", msg)
+                self.update_item(item_id, "status", "Lỗi Start")
+                self.update_item(item_id, "result", msg)
                 log_report(url, cat, detail, f"Start Failed: {msg}", c_user)
                 return
 
             # Skip "Inject Cookie..." update to reduce UI lag
-            # self.update_item(item, "status", "Inject Cookie...")
+            # self.update_item(item_id, "status", "Inject Cookie...")
             bm.inject_cookies(cookie)
             
             # Skip "Đang báo cáo..." update
-            # self.update_item(item, "status", "Đang báo cáo...")
+            # self.update_item(item_id, "status", "Đang báo cáo...")
             ok_report, msg_report = bm.navigate_and_report(url, cat, detail)
             
             if ok_report:
-                self.update_item(item, "status", "Hoàn thành")
-                self.update_item(item, "result", msg_report)
+                success_flag = True
+                self.update_item(item_id, "status", "Hoàn thành")
+                self.update_item(item_id, "result", msg_report)
                 log_report(url, cat, detail, "Success", c_user)
             else:
-                self.update_item(item, "status", "Lỗi")
-                self.update_item(item, "result", msg_report)
+                self.update_item(item_id, "status", "Lỗi")
+                self.update_item(item_id, "result", msg_report)
                 log_report(url, cat, detail, f"Failed: {msg_report}", c_user)
             
             # Final screenshot
             b64 = bm.get_screenshot_base64()
-            self.save_screenshot_to_disk(item, b64)
+            self.save_screenshot_to_disk(item_id, b64)
             
         except Exception as e:
-            self.update_item(item, "status", "Lỗi")
-            self.update_item(item, "result", str(e))
+            self.update_item(item_id, "status", "Lỗi")
+            self.update_item(item_id, "result", str(e))
             log_report(url, cat, detail, f"Exception: {str(e)}", c_user)
             
             # Error screenshot
             b64 = bm.get_screenshot_base64()
-            self.save_screenshot_to_disk(item, b64)
+            self.save_screenshot_to_disk(item_id, b64)
         finally:
             bm.close()
             with self.lock:
-                if item in self.active_browsers:
-                    del self.active_browsers[item]
+                if item_id in self.active_browsers:
+                    del self.active_browsers[item_id]
+                # Update counters
+                try:
+                    self.processed_count += 1
+                    if success_flag:
+                        self.success_count += 1
+                    else:
+                        self.failure_count += 1
+                except Exception:
+                    pass
 
-    def update_item(self, item, col, val):
-        # Push to queue instead of direct update
-        self.ui_queue.put((self.tree.set, (item, col, val)))
+            # Request UI update of stats in main thread
+            try:
+                self.root.after(0, self.update_batch_stats)
+            except Exception:
+                pass
+
+    def update_item(self, item_id, col, val):
+        # Update Data Model (O(1))
+        acc = self.account_map.get(item_id)
+        if acc:
+            acc[col] = val
+            
+        # Update UI only if visible
+        # Check if item_id is in current treeview children
+        if self.tree.exists(item_id):
+            self.ui_queue.put((self.tree.set, (item_id, col, val)))
 
     def save_screenshot_to_disk(self, item_id, b64_data):
         if not b64_data: return
@@ -752,4 +1012,73 @@ class ReportApp:
         self.btn_run.config(state='normal')
         self.btn_stop.config(state='disabled')
         self.lbl_status.config(text="Đã hoàn tất batch.")
+        # Final stats update
+        try:
+            self.update_batch_stats()
+        except Exception:
+            pass
+
         messagebox.showinfo("Xong", "Đã chạy xong danh sách.")
+
+    def format_seconds(self, sec):
+        try:
+            sec = int(sec)
+            h = sec // 3600
+            m = (sec % 3600) // 60
+            s = sec % 60
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        except Exception:
+            return "--:--:--"
+
+    def update_batch_stats(self):
+        # Update elapsed, remaining, success % labels. Must be called from main thread.
+        if not self.batch_start_time:
+            # Nothing to show
+            self.lbl_elapsed.config(text="Elapsed: 00:00:00")
+            self.lbl_remaining.config(text="Remaining: --:--:--")
+            self.lbl_success.config(text=f"Success: 0% (0/0)")
+            return
+
+        elapsed = time.time() - self.batch_start_time
+
+        with self.lock:
+            processed = getattr(self, 'processed_count', 0)
+            success = getattr(self, 'success_count', 0)
+            total = getattr(self, 'total_accounts_in_batch', 0)
+
+        # Completion % (processed / total)
+        completion_pct = 0.0
+        if total > 0:
+            completion_pct = (processed / total) * 100.0
+
+        # Success % among processed
+        success_pct = 0.0
+        if processed > 0:
+            success_pct = (success / processed) * 100.0
+
+        # Estimate remaining time using average
+        remaining_text = "--:--:--"
+        try:
+            if processed > 0 and processed < total:
+                avg = elapsed / processed
+                remain = avg * (total - processed)
+                remaining_text = self.format_seconds(remain)
+            elif processed >= total:
+                remaining_text = "00:00:00"
+        except Exception:
+            remaining_text = "--:--:--"
+
+        # Update labels
+        try:
+            self.lbl_elapsed.config(text=f"Elapsed: {self.format_seconds(elapsed)}")
+            self.lbl_remaining.config(text=f"Remaining: {remaining_text}")
+            self.lbl_success.config(text=f"Success: {int(success_pct)}% ({success}/{processed if processed>0 else 0}) | {int(completion_pct)}% done")
+        except Exception:
+            pass
+
+        # Schedule next update while running
+        if self.is_running:
+            try:
+                self.root.after(1000, self.update_batch_stats)
+            except Exception:
+                pass

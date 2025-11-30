@@ -93,7 +93,20 @@ class BrowserManager:
         options.add_argument("--log-level=3")
         options.add_argument("--silent")
         options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-extensions") # Disable all extensions by default (except proxy if added)
+        
+        # Extra optimizations for speed and stability
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-sync")
+        options.add_argument("--disable-translate")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--disable-device-discovery-notifications")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--password-store=basic")
+        options.add_argument("--allow-running-insecure-content")
+        
+        # options.add_argument("--disable-extensions") # Moved down to avoid conflict with proxy extension
+        options.add_argument("--ignore-certificate-errors") # Allow proxies with self-signed certs
         options.add_argument("--lang=vi") # Force Vietnamese language
         options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
         
@@ -118,16 +131,46 @@ class BrowserManager:
         if binary_path:
             options.binary_location = binary_path
 
+        has_proxy_extension = False
         if proxy_string and proxy_string.strip():
             p_str = proxy_string.strip()
+            # Remove protocol if present for parsing logic
+            if "://" in p_str:
+                p_str = p_str.split("://")[-1]
+
+            user = password = host = port = None
+            
+            # Try parsing different formats
             if '@' in p_str:
-                auth, host_port = p_str.split('@', 1)
-                user, password = auth.split(':', 1)
-                host, port = host_port.split(':', 1)
+                # Format: user:pass@host:port
+                try:
+                    auth, host_port = p_str.split('@', 1)
+                    if ':' in auth and ':' in host_port:
+                        user, password = auth.split(':', 1)
+                        host, port = host_port.split(':', 1)
+                except:
+                    pass
+            elif p_str.count(':') == 3:
+                # Format: host:port:user:pass
+                try:
+                    parts = p_str.split(':')
+                    host = parts[0]
+                    port = parts[1]
+                    user = parts[2]
+                    password = parts[3]
+                except:
+                    pass
+            
+            if user and password and host and port:
                 plugin_file = self.create_proxy_auth_extension(host, port, user, password)
                 options.add_extension(plugin_file)
+                has_proxy_extension = True
             else:
-                options.add_argument(f'--proxy-server={p_str}')
+                # Format: host:port or invalid auth format -> try direct
+                options.add_argument(f'--proxy-server={proxy_string.strip()}')
+
+        if not has_proxy_extension:
+            options.add_argument("--disable-extensions")
 
         try:
             # Cache driver path to avoid repeated checks
@@ -136,6 +179,11 @@ class BrowserManager:
             
             service = Service(globals()['CACHED_DRIVER_PATH'])
             self.driver = webdriver.Chrome(service=service, options=options)
+            
+            # Set timeouts to prevent hanging on slow/dead proxies
+            self.driver.set_page_load_timeout(60)
+            self.driver.set_script_timeout(30)
+            
             return True, "Khởi tạo trình duyệt thành công"
         except Exception as e:
             return False, f"Lỗi khởi tạo Browser: {str(e)}"
@@ -408,6 +456,11 @@ class BrowserManager:
             return False, f"Lỗi navigate_and_report: {str(e)}"
 
     def get_screenshot_base64(self):
+        # This method is called from UI thread, but driver is in worker thread.
+        # Selenium is not thread-safe.
+        # However, if we just read a cached value, it's safe.
+        # But we don't have a cached value yet.
+        # For now, we will try to grab it, but suppress errors.
         if self.driver:
             try:
                 return self.driver.get_screenshot_as_base64()
