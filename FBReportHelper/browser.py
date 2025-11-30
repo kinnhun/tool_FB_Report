@@ -290,6 +290,16 @@ class BrowserManager:
         except Exception:
             pass
 
+        # 1.6) Try specific aria-label from user request (Profile settings 3-dots)
+        try:
+            # "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
+            specific_aria = "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
+            xpath_specific = f"//div[@aria-label='{specific_aria}']"
+            if self.smart_click(xpath_specific, timeout=1):
+                return True, "Đã click nút 3 chấm (Profile Settings)"
+        except Exception:
+            pass
+
         # 2) Try to detect svg with three circles: //svg[count(.//circle)=3] or //svg[count(circle)=3]
         try:
             # Wait presence of such svg (short timeout)
