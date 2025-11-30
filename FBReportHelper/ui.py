@@ -92,11 +92,6 @@ class ReportApp:
         self.var_headless = tk.BooleanVar(value=True)
         ttk.Checkbutton(top_settings, text="Chạy ngầm (Headless)", variable=self.var_headless).pack(side='left', padx=10)
 
-        ttk.Label(top_settings, text="Ngôn ngữ:").pack(side='left', padx=(10,0))
-        self.combo_lang = ttk.Combobox(top_settings, values=["vi", "en"], width=5, state="readonly")
-        self.combo_lang.current(0)
-        self.combo_lang.pack(side='left', padx=5)
-
         ttk.Label(top_settings, text="Proxy chung:").pack(side='left', padx=(10,0))
         self.entry_proxy = ttk.Entry(top_settings, width=40)
         self.entry_proxy.pack(side='left', padx=5)
@@ -860,7 +855,7 @@ class ReportApp:
     def run_queue(self, q, num_threads, url, report_sets):
         proxy = self.entry_proxy.get().strip()
         headless = self.var_headless.get()
-        language = self.combo_lang.get()
+        language = "en" # Default to English for broader compatibility
         
         def worker():
             # Create one browser per thread
