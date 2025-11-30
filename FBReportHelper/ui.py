@@ -80,12 +80,28 @@ class ReportApp:
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill='both', expand=True)
 
+        # === TOP SETTINGS FRAME ===
+        top_settings = ttk.LabelFrame(main_frame, text="Cấu hình chung", padding=5)
+        top_settings.pack(fill='x', pady=(0, 10))
+
+        ttk.Label(top_settings, text="Số luồng (Threads):").pack(side='left')
+        self.spin_threads = ttk.Spinbox(top_settings, from_=1, to=50, width=5)
+        self.spin_threads.set(2)
+        self.spin_threads.pack(side='left', padx=5)
+        
+        self.var_headless = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top_settings, text="Chạy ngầm (Headless)", variable=self.var_headless).pack(side='left', padx=10)
+
+        ttk.Label(top_settings, text="Proxy chung:").pack(side='left', padx=(10,0))
+        self.entry_proxy = ttk.Entry(top_settings, width=40)
+        self.entry_proxy.pack(side='left', padx=5)
+
         # Use a PanedWindow so panels are resizable and the right panel won't be hidden
         paned = ttk.PanedWindow(main_frame, orient='horizontal')
         paned.pack(fill='both', expand=True)
         self.paned = paned
         
-        # === LEFT PANEL: ACCOUNT LIST & SETTINGS ===
+        # === LEFT PANEL: ACCOUNT LIST ===
         left_frame = ttk.LabelFrame(paned, text="1. Quản lý Tài khoản (Cookies)", padding=10)
         # Add left and right frames to paned window. Left gets more weight.
         paned.add(left_frame, weight=3)
@@ -145,9 +161,22 @@ class ReportApp:
         self.combo_status_filter.pack(side='left', padx=5)
         self.combo_status_filter.bind("<<ComboboxSelected>>", self.on_search)
 
-        # Treeview
+        # Pagination Controls (Packed at bottom first)
+        page_frame = ttk.Frame(left_frame)
+        page_frame.pack(side='bottom', fill='x', pady=5)
+        ttk.Button(page_frame, text="<< Trước", command=lambda: self.change_page(-1)).pack(side='left')
+        self.lbl_page = ttk.Label(page_frame, text="Trang 1/1")
+        self.lbl_page.pack(side='left', padx=10)
+        ttk.Button(page_frame, text="Sau >>", command=lambda: self.change_page(1)).pack(side='left')
+        ttk.Label(page_frame, text="Tổng: 0").pack(side='right', padx=5)
+        self.lbl_total = page_frame.winfo_children()[-1]
+
+        # Treeview Container (Takes remaining space)
+        tree_frame = ttk.Frame(left_frame)
+        tree_frame.pack(fill='both', expand=True)
+
         columns = ("stt", "cookie", "proxy", "status", "result", "view")
-        self.tree = ttk.Treeview(left_frame, columns=columns, show='headings', selectmode='extended')
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings', selectmode='extended')
         self.tree.heading("stt", text="#")
         self.tree.heading("cookie", text="Cookie (Ẩn)")
         self.tree.heading("proxy", text="Proxy")
@@ -162,20 +191,10 @@ class ReportApp:
         self.tree.column("result", width=200)
         self.tree.column("view", width=80, anchor='center')
         
-        scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=self.tree.yview)
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scrollbar.set)
         self.tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
-        
-        # Pagination Controls
-        page_frame = ttk.Frame(left_frame)
-        page_frame.pack(fill='x', pady=5)
-        ttk.Button(page_frame, text="<< Trước", command=lambda: self.change_page(-1)).pack(side='left')
-        self.lbl_page = ttk.Label(page_frame, text="Trang 1/1")
-        self.lbl_page.pack(side='left', padx=10)
-        ttk.Button(page_frame, text="Sau >>", command=lambda: self.change_page(1)).pack(side='left')
-        ttk.Label(page_frame, text="Tổng: 0").pack(side='right', padx=5)
-        self.lbl_total = page_frame.winfo_children()[-1]
 
         # Bind click for View column
         self.tree.bind("<Button-1>", self.on_tree_click)
@@ -184,23 +203,6 @@ class ReportApp:
         self.tree.bind("<Button-3>", self.show_context_menu)
         self.context_menu = tk.Menu(self.root, tearoff=0)
         self.context_menu.add_command(label="Xem trình duyệt (Screenshot)", command=self.view_browser_snapshot)
-
-        # Settings Frame (Bottom Left) - pinned to bottom so it stays visible
-        settings_frame = ttk.Frame(left_frame)
-        settings_frame.pack(side='bottom', fill='x', pady=10)
-        
-        ttk.Label(settings_frame, text="Số luồng (Threads):").pack(side='left')
-        self.spin_threads = ttk.Spinbox(settings_frame, from_=1, to=50, width=5)
-        self.spin_threads.set(2)
-        self.spin_threads.pack(side='left', padx=5)
-        
-        self.var_headless = tk.BooleanVar(value=True)
-        ttk.Checkbutton(settings_frame, text="Chạy ngầm (Headless)", variable=self.var_headless).pack(side='left', padx=10)
-
-        ttk.Label(settings_frame, text="Proxy chung:").pack(side='left', padx=(10,0))
-        self.entry_proxy = ttk.Entry(settings_frame)
-        # Make proxy entry expand so it remains visible when left pane narrows
-        self.entry_proxy.pack(side='left', padx=5, fill='x', expand=True)
 
         # === RIGHT PANEL: REPORT CONFIG ===
         right_frame = ttk.LabelFrame(paned, text="2. Cấu hình Báo cáo", padding=10)
