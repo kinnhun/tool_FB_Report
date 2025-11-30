@@ -231,6 +231,16 @@ class ReportApp:
         ttk.Label(right_frame, text="Chi tiết hành vi:").pack(anchor='w', pady=(10,0))
         self.combo_detail = ttk.Combobox(right_frame, state="readonly")
         self.combo_detail.pack(fill='x', pady=5)
+        self.combo_detail.bind("<<ComboboxSelected>>", self.on_detail_change)
+
+        self.lbl_sub_detail = ttk.Label(right_frame, text="Chi tiết phụ:")
+        self.lbl_sub_detail.pack(anchor='w', pady=(10,0))
+        self.combo_sub_detail = ttk.Combobox(right_frame, state="readonly")
+        self.combo_sub_detail.pack(fill='x', pady=5)
+
+        ttk.Label(right_frame, text="Thông tin bổ sung (Tên/URL cho Trang giả):").pack(anchor='w', pady=(10,0))
+        self.entry_target_info = ttk.Entry(right_frame, width=40)
+        self.entry_target_info.pack(fill='x', pady=5)
         
         # Report Sets UI
         btn_set_frame = ttk.Frame(right_frame)
@@ -447,12 +457,48 @@ class ReportApp:
 
     def on_category_change(self, event=None):
         cat = self.combo_category.get()
-        details = config.REPORT_DATA.get(cat, [])
-        self.combo_detail.config(values=details)
-        if details:
+        raw_details = config.REPORT_DATA.get(cat, [])
+        
+        # Parse details to handle nested dicts
+        self.current_details_map = {} # Name -> SubList or None
+        display_values = []
+        
+        for item in raw_details:
+            if isinstance(item, dict):
+                # It's a dict {Name: [SubItems]}
+                for k, v in item.items():
+                    display_values.append(k)
+                    self.current_details_map[k] = v
+            else:
+                # String
+                display_values.append(item)
+                self.current_details_map[item] = None
+                
+        self.combo_detail.config(values=display_values)
+        if display_values:
             self.combo_detail.current(0)
+            self.on_detail_change()
         else:
             self.combo_detail.set("")
+            self.on_detail_change()
+
+    def on_detail_change(self, event=None):
+        detail = self.combo_detail.get()
+        sub_items = self.current_details_map.get(detail)
+        
+        if sub_items:
+            self.lbl_sub_detail.pack(anchor='w', pady=(10,0), before=self.entry_target_info) # Repack to show
+            self.combo_sub_detail.pack(fill='x', pady=5, before=self.entry_target_info)
+            self.combo_sub_detail.config(values=sub_items)
+            self.combo_sub_detail.current(0)
+        else:
+            # Hide or clear
+            self.combo_sub_detail.set("")
+            self.combo_sub_detail.config(values=[])
+            # We can't easily 'hide' with pack without messing up order unless we use a frame or forget/pack.
+            # For simplicity, just clear values and maybe disable?
+            # Or just leave it empty.
+            pass
 
     def show_context_menu(self, event):
         item = self.tree.identify_row(event.y)
@@ -780,9 +826,15 @@ class ReportApp:
     def add_report_set(self):
         cat = self.combo_category.get()
         detail = self.combo_detail.get()
+        sub_detail = self.combo_sub_detail.get()
+        
         if cat and detail:
-            self.report_sets.append((cat, detail))
-            self.list_report_sets.insert('end', f"{cat} -> {detail}")
+            # Store as tuple (cat, detail, sub_detail)
+            self.report_sets.append((cat, detail, sub_detail))
+            display = f"{cat} -> {detail}"
+            if sub_detail:
+                display += f" -> {sub_detail}"
+            self.list_report_sets.insert('end', display)
         else:
             messagebox.showwarning("Thiếu thông tin", "Vui lòng chọn Hạng mục và Chi tiết trước khi thêm.")
 
@@ -793,6 +845,8 @@ class ReportApp:
     # --- BATCH LOGIC ---
     def start_batch(self):
         url = self.entry_url.get().strip()
+        target_info = self.entry_target_info.get().strip()
+
         if not url:
             messagebox.showwarning("Thiếu URL", "Vui lòng nhập URL.")
             return
@@ -842,17 +896,18 @@ class ReportApp:
         if not current_sets:
             cat = self.combo_category.get()
             detail = self.combo_detail.get()
+            sub_detail = self.combo_sub_detail.get()
             if cat and detail:
-                current_sets.append((cat, detail))
+                current_sets.append((cat, detail, sub_detail))
             else:
                 messagebox.showwarning("Thiếu cấu hình", "Vui lòng chọn Hạng mục báo cáo hoặc thêm vào bộ báo cáo.")
                 self.btn_run.config(state='normal')
                 self.btn_stop.config(state='disabled')
                 return
 
-        threading.Thread(target=self.run_queue, args=(q, num_threads, url, current_sets)).start()
+        threading.Thread(target=self.run_queue, args=(q, num_threads, url, current_sets, target_info)).start()
 
-    def run_queue(self, q, num_threads, url, report_sets):
+    def run_queue(self, q, num_threads, url, report_sets, target_info=None):
         proxy = self.entry_proxy.get().strip()
         headless = self.var_headless.get()
         language = "en" # Default to English for broader compatibility
@@ -889,9 +944,19 @@ class ReportApp:
 
                 # Pick random report config
                 if report_sets:
-                    r_cat, r_detail = random.choice(report_sets)
+                    # Handle both 2-tuple and 3-tuple for backward compatibility if needed, 
+                    # but we updated add_report_set to use 3-tuple.
+                    # However, existing running instances might have issues if we don't restart.
+                    # Assuming clean start.
+                    r_set = random.choice(report_sets)
+                    if len(r_set) == 3:
+                        r_cat, r_detail, r_sub = r_set
+                    else:
+                        r_cat, r_detail = r_set
+                        r_sub = None
+                        
                     # Pass the existing browser manager
-                    self.process_one_account(item_id, cookie, url, r_cat, r_detail, use_proxy, headless, browser_instance=bm, language=language)
+                    self.process_one_account(item_id, cookie, url, r_cat, r_detail, use_proxy, headless, browser_instance=bm, language=language, target_info=target_info, sub_detail=r_sub)
                 
                 q.task_done()
             
@@ -910,7 +975,7 @@ class ReportApp:
             
         self.root.after(0, self.on_batch_finished)
 
-    def process_one_account(self, item_id, cookie, url, cat, detail, proxy, headless, browser_instance=None, language="vi"):
+    def process_one_account(self, item_id, cookie, url, cat, detail, proxy, headless, browser_instance=None, language="vi", target_info=None, sub_detail=None):
         # Reduce UI updates to essential states to save overhead
         status_msg = "Đang chạy..."
         if proxy:
@@ -964,7 +1029,7 @@ class ReportApp:
             
             # Skip "Đang báo cáo..." update
             # self.update_item(item_id, "status", "Đang báo cáo...")
-            ok_report, msg_report = bm.navigate_and_report(url, cat, detail)
+            ok_report, msg_report = bm.navigate_and_report(url, cat, detail, target_info, sub_detail)
             
             if ok_report:
                 success_flag = True

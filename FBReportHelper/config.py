@@ -30,12 +30,18 @@ REPORT_DATA = {
         "Có vẻ giống hành vi khủng bố",
         "Kêu gọi hành vi bạo lực",
         "Có vẻ giống tội phạm có tổ chức",
-        "Cổ xúy hành vi thù ghét",
+        {"Cổ xúy hành vi thù ghét": [
+            "Nội dung này bắt nguồn từ nhóm thù ghét có tổ chức",
+            "Đăng ngôn từ gây thù ghét"
+        ]},
         "Thể hiện hành vi bạo lực, tử vong hoặc thương tích nghiêm trọng",
         "Ngược đãi động vật"
     ],
     "Bán hoặc quảng cáo mặt hàng bị hạn chế": [
-        "Chất cấm, chất gây nghiện",
+        {"Chất cấm, chất gây nghiện": [
+            "Các loại chất cấm, chất gây nghiện nặng như cocaine, heroin hoặc fentanyl",
+            "Các loại chất cấm, chất gây nghiện khác"
+        ]},
         "Vũ khí",
         "Động vật"
     ],

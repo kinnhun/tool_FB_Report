@@ -9,6 +9,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
@@ -397,7 +398,7 @@ class BrowserManager:
         return False, "Không tìm thấy nút 3 chấm"
 
     # ------------------ Report flow (simplified usage) ------------------
-    def execute_report_flow(self, category, detail):
+    def execute_report_flow(self, category, detail, target_info=None, sub_detail=None):
         """
         Example flow:
          - find/click 3-dots
@@ -405,7 +406,10 @@ class BrowserManager:
          - choose category (category)
          - click Next
          - choose detail (detail)
-         - click Next / Submit
+         - click Next
+         - (Optional) choose sub_detail (Level 3) -> click Next
+         - (Optional) Input target info (Name/URL) -> Select -> Next
+         - Submit
         """
         if not self.driver:
             return False, "Browser chưa chạy"
@@ -463,18 +467,94 @@ class BrowserManager:
                         short = " ".join(parts[:2])
                         self.click_button_by_text([short], timeout=2)
             # time.sleep(0.4) # Removed sleep
-            # Next / Submit
+            # Next
             self.click_next_action()
-            # time.sleep(0.6) # Removed sleep
-            # Final try
-            self.click_next_action()
+            
+            # Choose sub_detail (level 3)
+            if sub_detail:
+                # Wait a bit for next screen
+                time.sleep(0.5)
+                subs = [sub_detail]
+                if hasattr(config, 'TRANSLATIONS') and sub_detail in config.TRANSLATIONS:
+                    subs.append(config.TRANSLATIONS[sub_detail])
+                
+                if not self.click_button_by_text(subs, timeout=4):
+                     # fallback
+                    parts = sub_detail.split()
+                    if len(parts) >= 2:
+                        short = " ".join(parts[:2])
+                        self.click_button_by_text([short], timeout=2)
+                
+                time.sleep(0.5)
+                self.click_next_action()
+
+            # Handle Target Info Input (for Fake Page -> Friend/Celebrity/Business)
+            if target_info:
+                try:
+                    # Wait briefly for input to appear
+                    wait = WebDriverWait(self.driver, 4)
+                    # XPath based on user snippets: aria-label="Tên" or "URL hoặc tên Trang Facebook"
+                    input_xpath = "//input[@aria-label='Tên' or @aria-label='URL hoặc tên Trang Facebook' or @role='combobox']"
+                    
+                    try:
+                        inp = wait.until(EC.presence_of_element_located((By.XPATH, input_xpath)))
+                        # Type info
+                        inp.clear()
+                        inp.send_keys(target_info)
+                        time.sleep(2) # Wait for search results to load
+                        
+                        # Select first result: Press ARROW_DOWN then ENTER
+                        inp.send_keys(Keys.ARROW_DOWN)
+                        time.sleep(0.5)
+                        inp.send_keys(Keys.ENTER)
+                        time.sleep(1)
+                        
+                        # Click Next after selecting
+                        self.click_next_action()
+                    except Exception:
+                        # Input not found or not needed
+                        pass
+                except Exception:
+                    pass
+
+            # Final Submit / Finish
+            # Wait for the Submit button to appear clearly
+            time.sleep(2.0) 
+            
+            # Try clicking Submit/Next/Done multiple times to ensure completion
+            submit_clicked = False
+            submit_texts = ["Gửi", "Submit", "Gửi báo cáo", "Submit Report"]
+            
+            for _ in range(5):
+                # 1. Try clicking Submit
+                if self.click_button_by_text(submit_texts, timeout=3):
+                    submit_clicked = True
+                    time.sleep(3) # Wait for submission to process
+                
+                # 2. If not found, maybe it's "Next" (Tiếp) leading to Submit?
+                elif self.click_button_by_text(["Tiếp", "Next"], timeout=2):
+                    time.sleep(1)
+                    
+                # 3. Check for "Done" (Xong) - means success
+                elif self.click_button_by_text(["Xong", "Done", "Đóng", "Close"], timeout=2):
+                    submit_clicked = True # Considered success
+                    break
+            
+            if not submit_clicked:
+                 # Last ditch effort: try to find any blue button in dialog?
+                 # For now, just try one last time with longer timeout
+                 if self.click_button_by_text(submit_texts, timeout=5):
+                     submit_clicked = True
+            
+            if not submit_clicked:
+                return False, "Không tìm thấy hoặc không click được nút Gửi (Submit)."
 
             return True, "Quy trình báo cáo đã được thực hiện (kiểm tra UI để xác nhận)."
 
         except Exception as e:
             return False, f"Lỗi trong execute_report_flow: {str(e)}"
 
-    def navigate_and_report(self, url, category, detail):
+    def navigate_and_report(self, url, category, detail, target_info=None, sub_detail=None):
         if not self.driver:
             return False, "Browser chưa chạy"
         
@@ -500,7 +580,7 @@ class BrowserManager:
                      # If clicked directly, skip 3-dots
                      pass
                 else:
-                     ok, msg = self.execute_report_flow(category, detail)
+                     ok, msg = self.execute_report_flow(category, detail, target_info, sub_detail)
                      if not ok:
                          if attempt < 1: # If first attempt failed, refresh and try again
                              continue
@@ -537,8 +617,75 @@ class BrowserManager:
                             self.click_button_by_text([short], timeout=1)
                 # time.sleep(0.2) # Removed sleep
                 self.click_next_action()
-                # time.sleep(0.2) # Removed sleep
-                self.click_next_action()
+
+                # Choose sub_detail (level 3)
+                if sub_detail:
+                    # Wait a bit for next screen
+                    time.sleep(0.5)
+                    subs = [sub_detail]
+                    if hasattr(config, 'TRANSLATIONS') and sub_detail in config.TRANSLATIONS:
+                        subs.append(config.TRANSLATIONS[sub_detail])
+                    
+                    if not self.click_button_by_text(subs, timeout=4):
+                        # fallback
+                        parts = sub_detail.split()
+                        if len(parts) >= 2:
+                            short = " ".join(parts[:2])
+                            self.click_button_by_text([short], timeout=2)
+                    
+                    time.sleep(0.5)
+                    self.click_next_action()
+                
+                # Handle Target Info Input (for Fake Page -> Friend/Celebrity/Business)
+                if target_info:
+                    try:
+                        wait = WebDriverWait(self.driver, 4)
+                        input_xpath = "//input[@aria-label='Tên' or @aria-label='URL hoặc tên Trang Facebook' or @role='combobox']"
+                        try:
+                            inp = wait.until(EC.presence_of_element_located((By.XPATH, input_xpath)))
+                            inp.clear()
+                            inp.send_keys(target_info)
+                            time.sleep(2)
+                            inp.send_keys(Keys.ARROW_DOWN)
+                            time.sleep(0.5)
+                            inp.send_keys(Keys.ENTER)
+                            time.sleep(1)
+                            self.click_next_action()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                # Final Submit / Finish
+                # Wait for the Submit button to appear clearly
+                time.sleep(2.0) 
+                
+                # Try clicking Submit/Next/Done multiple times to ensure completion
+                submit_clicked = False
+                submit_texts = ["Gửi", "Submit", "Gửi báo cáo", "Submit Report"]
+                
+                for _ in range(5):
+                    # 1. Try clicking Submit
+                    if self.click_button_by_text(submit_texts, timeout=3):
+                        submit_clicked = True
+                        time.sleep(3) # Wait for submission to process
+                    
+                    # 2. If not found, maybe it's "Next" (Tiếp) leading to Submit?
+                    elif self.click_button_by_text(["Tiếp", "Next"], timeout=2):
+                        time.sleep(1)
+                        
+                    # 3. Check for "Done" (Xong) - means success
+                    elif self.click_button_by_text(["Xong", "Done", "Đóng", "Close"], timeout=2):
+                        submit_clicked = True # Considered success
+                        break
+                
+                if not submit_clicked:
+                     # Last ditch effort
+                     if self.click_button_by_text(submit_texts, timeout=5):
+                         submit_clicked = True
+                
+                if not submit_clicked:
+                    return False, "Không tìm thấy hoặc không click được nút Gửi (Submit)."
 
                 return True, "Quy trình báo cáo đã được thực hiện (kiểm tra UI để xác nhận)."
 
