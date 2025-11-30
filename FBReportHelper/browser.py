@@ -287,6 +287,19 @@ class BrowserManager:
 
         wait = WebDriverWait(self.driver, 4)
 
+        # 0) PRIORITY: Try specific aria-label from user request (Profile settings 3-dots)
+        # This fixes the issue where it clicks the first post's 3-dots instead of the Page's 3-dots.
+        try:
+            # "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
+            specific_aria_vi = "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
+            specific_aria_en = "See more options in profile settings" # Approximate English
+            # User provided HTML shows it's a div with role='button'
+            xpath_specific = f"//div[(@aria-label='{specific_aria_vi}' or @aria-label='{specific_aria_en}') and @role='button']"
+            if self.smart_click(xpath_specific, timeout=2):
+                return True, "Đã click nút 3 chấm (Profile Settings)"
+        except Exception:
+            pass
+
         # 1) Try common aria-label/text variants (fast)
         variants = [
             "Hành động với bài viết này",
@@ -324,17 +337,6 @@ class BrowserManager:
                 nearby_xpath = "(//div[@aria-label='Nhắn tin' or @aria-label='Message']/following::div[@role='button'][.//svg])[1]"
                 if self.smart_click(nearby_xpath, timeout=1):
                      return True, "Đã click nút 3 chấm (cạnh nút Nhắn tin)"
-        except Exception:
-            pass
-
-        # 1.6) Try specific aria-label from user request (Profile settings 3-dots)
-        try:
-            # "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
-            specific_aria_vi = "Xem thêm tùy chọn trong phần cài đặt trang cá nhân"
-            specific_aria_en = "See more options in profile settings" # Approximate English
-            xpath_specific = f"//div[@aria-label='{specific_aria_vi}' or @aria-label='{specific_aria_en}']"
-            if self.smart_click(xpath_specific, timeout=1):
-                return True, "Đã click nút 3 chấm (Profile Settings)"
         except Exception:
             pass
 
@@ -416,7 +418,7 @@ class BrowserManager:
             time.sleep(0.5)
 
             # click report button
-            if not self.click_button_by_text(["Báo cáo", "Report", "Tìm hỗ trợ", "Find support", "Tìm hỗ trợ hoặc báo cáo", "Find support or report"]):
+            if not self.click_button_by_text(["Báo cáo trang", "Report Page", "Báo cáo", "Report", "Tìm hỗ trợ", "Find support", "Tìm hỗ trợ hoặc báo cáo", "Find support or report"]):
                 return False, "Không click được nút Báo cáo sau khi mở menu"
 
             # wait a bit for popup
@@ -494,7 +496,7 @@ class BrowserManager:
                     pass
                 
                 # Check if "Report" button is already visible (e.g. on some Pages/Groups)
-                if self.click_button_by_text(["Báo cáo", "Report", "Tìm hỗ trợ hoặc báo cáo"], timeout=3):
+                if self.click_button_by_text(["Báo cáo trang", "Report Page", "Báo cáo", "Report", "Tìm hỗ trợ hoặc báo cáo"], timeout=3):
                      # If clicked directly, skip 3-dots
                      pass
                 else:
