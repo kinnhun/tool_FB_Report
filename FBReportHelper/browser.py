@@ -257,7 +257,13 @@ class BrowserManager:
         """Chờ element clickable rồi click bằng JS để ổn định hơn."""
         try:
             wait = WebDriverWait(self.driver, timeout)
-            elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            # Try clickable first
+            try:
+                elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            except:
+                # Fallback to presence + visibility if clickable fails
+                elem = wait.until(EC.visibility_of_element_located((By.XPATH, xpath)))
+            
             self.driver.execute_script("arguments[0].click();", elem)
             return True
         except Exception:
@@ -265,9 +271,26 @@ class BrowserManager:
 
     def click_button_by_text(self, texts, timeout=3):
         """Thử click phần tử chứa một trong các texts."""
+        # 1. Priority: Exact match on aria-label or role=button with text
         for t in texts:
-            xpath = f"//span[contains(normalize-space(.), '{t}')] | //div[@aria-label='{t}'] | //button[.//span[contains(normalize-space(.), '{t}')]]"
-            if self.smart_click(xpath, timeout=timeout):
+            xpath_high_priority = (
+                f"//div[@role='button'][@aria-label='{t}'] | "
+                f"//div[@role='button'][.//span[normalize-space(.)='{t}']] | "
+                f"//button[normalize-space(.)='{t}']"
+            )
+            if self.smart_click(xpath_high_priority, timeout=1):
+                return True
+
+        # 2. Fallback: Contains text, generic spans
+        for t in texts:
+            xpath_generic = (
+                f"//span[contains(normalize-space(.), '{t}')] | "
+                f"//div[@aria-label='{t}'] | "
+                f"//button[.//span[contains(normalize-space(.), '{t}')]] | "
+                f"//div[@role='button'][.//span[contains(normalize-space(.), '{t}')]] | "
+                f"//div[@role='button'][contains(normalize-space(.), '{t}')]"
+            )
+            if self.smart_click(xpath_generic, timeout=timeout):
                 return True
         return False
 
@@ -491,30 +514,64 @@ class BrowserManager:
             # Handle Target Info Input (for Fake Page -> Friend/Celebrity/Business)
             if target_info:
                 try:
-                    # Wait briefly for input to appear
-                    wait = WebDriverWait(self.driver, 4)
-                    # XPath based on user snippets: aria-label="Tên" or "URL hoặc tên Trang Facebook"
-                    input_xpath = "//input[@aria-label='Tên' or @aria-label='URL hoặc tên Trang Facebook' or @role='combobox']"
+                    wait = WebDriverWait(self.driver, 5)
+                    # More specific XPaths based on user provided HTML
+                    input_xpaths = [
+                        "//input[@aria-label='Tên']",
+                        "//input[@aria-label='URL hoặc tên Trang Facebook']",
+                        "//input[@role='combobox'][@type='search']"
+                    ]
                     
-                    try:
-                        inp = wait.until(EC.presence_of_element_located((By.XPATH, input_xpath)))
-                        # Type info
-                        inp.clear()
-                        inp.send_keys(target_info)
-                        time.sleep(2) # Wait for search results to load
+                    inp = None
+                    for xp in input_xpaths:
+                        try:
+                            inp = wait.until(EC.element_to_be_clickable((By.XPATH, xp)))
+                            if inp: break
+                        except:
+                            continue
+                    
+                    if inp:
+                        # Click to focus
+                        try:
+                            inp.click()
+                        except:
+                            self.driver.execute_script("arguments[0].click();", inp)
                         
-                        # Select first result: Press ARROW_DOWN then ENTER
+                        time.sleep(0.5)
+                        
+                        # Clear and Type
+                        # React inputs sometimes need robust clearing
+                        inp.send_keys(Keys.CONTROL + "a")
+                        inp.send_keys(Keys.DELETE)
+                        time.sleep(0.2)
+                        inp.send_keys(target_info)
+                        
+                        # Wait for suggestions to load
+                        time.sleep(2.5)
+                        
+                        # Try to select the first suggestion
+                        # Method 1: Arrow Down + Enter
                         inp.send_keys(Keys.ARROW_DOWN)
                         time.sleep(0.5)
                         inp.send_keys(Keys.ENTER)
+                        
+                        # Method 2: If listbox appears, click the first item
+                        # Facebook suggestions usually have role="option" or are in a listbox
+                        try:
+                            suggestion_xpath = "//ul[@role='listbox']//li | //div[@role='listbox']//div[@role='option'] | //div[contains(@class, 'x1n2onr6')][@role='button']" 
+                            # This is a guess for the suggestion item. 
+                            # Let's stick to Arrow Down + Enter as primary, but maybe do it twice if needed?
+                            # Or check if aria-expanded becomes true?
+                            pass
+                        except:
+                            pass
+
                         time.sleep(1)
                         
                         # Click Next after selecting
                         self.click_next_action()
-                    except Exception:
-                        # Input not found or not needed
-                        pass
-                except Exception:
+                except Exception as e:
+                    print(f"Error entering target info: {e}")
                     pass
 
             # Final Submit / Finish
@@ -545,6 +602,14 @@ class BrowserManager:
                  # For now, just try one last time with longer timeout
                  if self.click_button_by_text(submit_texts, timeout=5):
                      submit_clicked = True
+                 else:
+                     # Try clicking the last button in the dialog (usually Submit/Confirm)
+                     try:
+                         last_btn_xpath = "(//div[@role='dialog']//div[@role='button'])[last()]"
+                         if self.smart_click(last_btn_xpath, timeout=2):
+                             submit_clicked = True
+                     except:
+                         pass
             
             if not submit_clicked:
                 return False, "Không tìm thấy hoặc không click được nút Gửi (Submit)."
@@ -639,21 +704,53 @@ class BrowserManager:
                 # Handle Target Info Input (for Fake Page -> Friend/Celebrity/Business)
                 if target_info:
                     try:
-                        wait = WebDriverWait(self.driver, 4)
-                        input_xpath = "//input[@aria-label='Tên' or @aria-label='URL hoặc tên Trang Facebook' or @role='combobox']"
-                        try:
-                            inp = wait.until(EC.presence_of_element_located((By.XPATH, input_xpath)))
-                            inp.clear()
+                        wait = WebDriverWait(self.driver, 5)
+                        # More specific XPaths based on user provided HTML
+                        input_xpaths = [
+                            "//input[@aria-label='Tên']",
+                            "//input[@aria-label='URL hoặc tên Trang Facebook']",
+                            "//input[@role='combobox'][@type='search']"
+                        ]
+                        
+                        inp = None
+                        for xp in input_xpaths:
+                            try:
+                                inp = wait.until(EC.element_to_be_clickable((By.XPATH, xp)))
+                                if inp: break
+                            except:
+                                continue
+                        
+                        if inp:
+                            # Click to focus
+                            try:
+                                inp.click()
+                            except:
+                                self.driver.execute_script("arguments[0].click();", inp)
+                            
+                            time.sleep(0.5)
+                            
+                            # Clear and Type
+                            # React inputs sometimes need robust clearing
+                            inp.send_keys(Keys.CONTROL + "a")
+                            inp.send_keys(Keys.DELETE)
+                            time.sleep(0.2)
                             inp.send_keys(target_info)
-                            time.sleep(2)
+                            
+                            # Wait for suggestions to load
+                            time.sleep(2.5)
+                            
+                            # Try to select the first suggestion
+                            # Method 1: Arrow Down + Enter
                             inp.send_keys(Keys.ARROW_DOWN)
                             time.sleep(0.5)
                             inp.send_keys(Keys.ENTER)
+                            
                             time.sleep(1)
+                            
+                            # Click Next after selecting
                             self.click_next_action()
-                        except Exception:
-                            pass
-                    except Exception:
+                    except Exception as e:
+                        print(f"Error entering target info: {e}")
                         pass
 
                 # Final Submit / Finish
@@ -683,6 +780,14 @@ class BrowserManager:
                      # Last ditch effort
                      if self.click_button_by_text(submit_texts, timeout=5):
                          submit_clicked = True
+                     else:
+                         # Try clicking the last button in the dialog (usually Submit/Confirm)
+                         try:
+                             last_btn_xpath = "(//div[@role='dialog']//div[@role='button'])[last()]"
+                             if self.smart_click(last_btn_xpath, timeout=2):
+                                 submit_clicked = True
+                         except:
+                             pass
                 
                 if not submit_clicked:
                     return False, "Không tìm thấy hoặc không click được nút Gửi (Submit)."
