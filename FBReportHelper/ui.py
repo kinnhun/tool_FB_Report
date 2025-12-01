@@ -219,53 +219,11 @@ class ReportApp:
                 pass
         self.right_frame = right_frame
         
-        ttk.Label(right_frame, text="Link cần báo cáo:").pack(anchor='w')
-        self.entry_url = ttk.Entry(right_frame, width=40)
-        self.entry_url.pack(fill='x', pady=5)
-
-        ttk.Label(right_frame, text="Hạng mục chính:").pack(anchor='w', pady=(10,0))
-        self.combo_category = ttk.Combobox(right_frame, values=config.CATEGORIES, state="readonly")
-        self.combo_category.pack(fill='x', pady=5)
-        self.combo_category.bind("<<ComboboxSelected>>", self.on_category_change)
-
-        ttk.Label(right_frame, text="Chi tiết hành vi:").pack(anchor='w', pady=(10,0))
-        self.combo_detail = ttk.Combobox(right_frame, state="readonly")
-        self.combo_detail.pack(fill='x', pady=5)
-        self.combo_detail.bind("<<ComboboxSelected>>", self.on_detail_change)
-
-        self.lbl_sub_detail = ttk.Label(right_frame, text="Chi tiết phụ:")
-        self.lbl_sub_detail.pack(anchor='w', pady=(10,0))
-        self.combo_sub_detail = ttk.Combobox(right_frame, state="readonly")
-        self.combo_sub_detail.pack(fill='x', pady=5)
-
-        ttk.Label(right_frame, text="Thông tin bổ sung (Tên/URL cho Trang giả):").pack(anchor='w', pady=(10,0))
-        self.entry_target_info = ttk.Entry(right_frame, width=40)
-        self.entry_target_info.pack(fill='x', pady=5)
-        
-        # Report Sets UI
-        btn_set_frame = ttk.Frame(right_frame)
-        btn_set_frame.pack(fill='x', pady=5)
-        ttk.Button(btn_set_frame, text="Thêm vào bộ (Random)", command=self.add_report_set).pack(side='left', expand=True, fill='x')
-        ttk.Button(btn_set_frame, text="Xóa bộ", command=self.clear_report_set).pack(side='left', padx=5)
-
-        ttk.Label(right_frame, text="Danh sách bộ báo cáo:").pack(anchor='w')
-        self.list_report_sets = tk.Listbox(right_frame, height=6)
-        self.list_report_sets.pack(fill='x', pady=5)
-        
-        ttk.Separator(right_frame, orient='horizontal').pack(fill='x', pady=20)
-        
-        self.btn_run = ttk.Button(right_frame, text="CHẠY HÀNG LOẠT", command=self.start_batch)
-        self.btn_run.pack(fill='x', ipady=10)
-        
-        self.btn_stop = ttk.Button(right_frame, text="DỪNG TẤT CẢ", command=self.stop_batch, state='disabled')
-        self.btn_stop.pack(fill='x', pady=5)
-        
-        self.btn_history = ttk.Button(right_frame, text="Xem Lịch sử", command=self.view_history)
-        self.btn_history.pack(fill='x', pady=5)
-        
+        # --- Scrollable Container Setup ---
+        # 1. Bottom fixed status area (Packed first with side=bottom to reserve space)
         self.lbl_status = ttk.Label(right_frame, text="Sẵn sàng", relief="sunken", anchor="w")
         self.lbl_status.pack(side='bottom', fill='x', pady=10)
-        # Batch stats (Elapsed, Remaining, Success %)
+        
         stats_frame = ttk.Frame(right_frame)
         stats_frame.pack(side='bottom', fill='x', pady=(0,6))
 
@@ -277,6 +235,81 @@ class ReportApp:
 
         self.lbl_success = ttk.Label(stats_frame, text="Success: 0% (0/0)")
         self.lbl_success.pack(side='left', padx=10)
+
+        # 2. Scrollable Canvas for the rest
+        canvas_frame = ttk.Frame(right_frame)
+        canvas_frame.pack(fill='both', expand=True)
+        
+        canvas = tk.Canvas(canvas_frame)
+        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        # Create window in canvas
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        # Ensure scrollable_frame fills the canvas width
+        def on_canvas_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+        canvas.bind("<Configure>", on_canvas_configure)
+
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Use scrollable_frame as parent for config widgets
+        parent_frame = scrollable_frame
+        
+        ttk.Label(parent_frame, text="Link cần báo cáo:").pack(anchor='w')
+        self.entry_url = ttk.Entry(parent_frame, width=40)
+        self.entry_url.pack(fill='x', pady=5)
+
+        ttk.Label(parent_frame, text="Hạng mục chính:").pack(anchor='w', pady=(10,0))
+        self.combo_category = ttk.Combobox(parent_frame, values=config.CATEGORIES, state="readonly")
+        self.combo_category.pack(fill='x', pady=5)
+        self.combo_category.bind("<<ComboboxSelected>>", self.on_category_change)
+
+        ttk.Label(parent_frame, text="Chi tiết hành vi:").pack(anchor='w', pady=(10,0))
+        self.combo_detail = ttk.Combobox(parent_frame, state="readonly")
+        self.combo_detail.pack(fill='x', pady=5)
+        self.combo_detail.bind("<<ComboboxSelected>>", self.on_detail_change)
+
+        self.lbl_sub_detail = ttk.Label(parent_frame, text="Chi tiết phụ:")
+        self.lbl_sub_detail.pack(anchor='w', pady=(10,0))
+        self.combo_sub_detail = ttk.Combobox(parent_frame, state="readonly")
+        self.combo_sub_detail.pack(fill='x', pady=5)
+
+        ttk.Label(parent_frame, text="Thông tin bổ sung (Tên/URL cho Trang giả):").pack(anchor='w', pady=(10,0))
+        self.entry_target_info = ttk.Entry(parent_frame, width=40)
+        self.entry_target_info.pack(fill='x', pady=5)
+        
+        # Report Sets UI
+        btn_set_frame = ttk.Frame(parent_frame)
+        btn_set_frame.pack(fill='x', pady=5)
+        ttk.Button(btn_set_frame, text="Thêm vào bộ (Random)", command=self.add_report_set).pack(side='left', expand=True, fill='x')
+        ttk.Button(btn_set_frame, text="Xóa bộ", command=self.clear_report_set).pack(side='left', padx=5)
+
+        ttk.Label(parent_frame, text="Danh sách bộ báo cáo:").pack(anchor='w')
+        self.list_report_sets = tk.Listbox(parent_frame, height=6)
+        self.list_report_sets.pack(fill='x', pady=5)
+        
+        ttk.Separator(parent_frame, orient='horizontal').pack(fill='x', pady=20)
+        
+        self.btn_run = ttk.Button(parent_frame, text="CHẠY HÀNG LOẠT", command=self.start_batch)
+        self.btn_run.pack(fill='x', ipady=10)
+        
+        self.btn_stop = ttk.Button(parent_frame, text="DỪNG TẤT CẢ", command=self.stop_batch, state='disabled')
+        self.btn_stop.pack(fill='x', pady=5)
+        
+        self.btn_history = ttk.Button(parent_frame, text="Xem Lịch sử", command=self.view_history)
+        self.btn_history.pack(fill='x', pady=5)
 
         # Init
         if config.CATEGORIES:
